@@ -1,0 +1,19 @@
+This is maintained using Dist::Zilla
+----------------
+https://cpantesters.org/distro/D/Spreadsheet-MailMerge.html
+----------------
+
+dzil clean; dzil build && dzil test
+
+dzil release  # now auto-updates version, commits, pushes, and uploads
+
+----------------
+
+Git book: https://git-scm.com/book/en/v2
+
+----------------
+
+https://cpantesters.org/distro/D/ODF-MailMerge.html
+
+http://matrix.cpantesters.org/?dist=ODF-MailMerge
+
