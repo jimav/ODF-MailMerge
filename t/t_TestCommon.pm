@@ -83,7 +83,7 @@ our @EXPORT = qw/silent
                  run_perlscript
                  @quotes
                  string_to_tempfile
-                 tmpcopy_if_writeable 
+                 tmpcopy_if_writeable
                 /;
 our @EXPORT_OK = qw/$savepath $debug $silent $verbose %dvs dprint dprintf/;
 
@@ -118,7 +118,8 @@ GetOptions(
   "v|verbose"         => \$verbose,
 ) or die "bad args";
 Getopt::Long::Configure("default");
-say "> ARGV PASSED THROUGH: ",join(",",map{ "'${_}'" } @ARGV) if $debug;
+say "> ARGV PASSED THROUGH: ",join(",",map{ "'${_}'" } @ARGV)
+  if @ARGV && $debug;
 
 $dvs{debug}   = $debug   if defined($debug);
 $dvs{verbose} = $verbose if defined($verbose);
@@ -754,7 +755,7 @@ sub tmpcopy_if_writeable($) {
   confess "$path : $!" unless stat($path);
   if ( (stat(_))[2] & 0222 ) {
     my ($name, $suf) = (basename($path) =~ /^(.*?)((?:\.\w{1,4})?)$/);
-    (undef, my $tpath) = 
+    (undef, my $tpath) =
       File::Temp::tempfile(SUFFIX => $suf, UNLINK => 1);
     File::Copy::copy($path, $tpath) or die "File::Copy $!";
     return $tpath;
