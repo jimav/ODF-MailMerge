@@ -23,15 +23,23 @@ package ODF::MailMerge;
 use Carp;
 our @CARP_NOT = ("ODF::lpOD_Helper", "ODF::lpOD");
 
-use Scalar::Util qw/refaddr/;
+use Scalar::Util qw/refaddr blessed/;
 use List::Util qw/first any none all max min sum0/;
-use Data::Dumper::Interp 6.004 qw/visnew ivis dvis vis visq/;
+use List::MoreUtils qw/before after uniq/;
+use Data::Dumper::Interp 6.004
+       qw/visnew ivis dvis dvisq ivisq vis visq addrvis/;
 use Spreadsheet::Edit::Log qw/oops btw/;
+use Clone ();
 
 use ODF::lpOD;
-use ODF::lpOD_Helper 6.001 qw/:DEFAULT PARA_COND Hr_MASK/;
+use ODF::lpOD_Helper 6.001 qw/:DEFAULT
+                              PARA_COND
+                              Hr_MASK
+                              arraytostring hashtostring/;
 
 use constant ROW_COND => "table:table-row";
+use constant ROW_OR_PARA_COND => Hor_cond(PARA_COND, ROW_COND);
+use constant ROW_OR_BODYROOT_COND => "table:table-row|office:text";
 
 use Exporter 'import';
 our @EXPORT = qw/replace_tokens/;
@@ -83,105 +91,182 @@ sub _parse_token($) {
   }
   return ($tokname, \@std_mods, \@custom_mods);
 }
+sub _to_content_list(_) {
+  my $val = shift;
+  # Convert hash value which is a single value or [content spac]
+  # to a [list of [content spec]s].
+  #
+  # A [content spec] is a list of "text strings" and [style descriptor]
+  # sub-arrays which apply to the immediately-following text string
+  # (see ODF::lpOD_Helper for details).
+  #
+  if (ref $val) {
+    croak ivis 'Value contains an illegal ref type (not ARRAY): $val'
+      if any{ref($_) && ref($_) ne "ARRAY"} $val, eval{@$val};
 
-sub _dryrun_rt($$$@) {
-  my ($context, $hash, $tokname_infos, %opts) = @_;
+    if (none{ref} @$val) {
+      # [all...non-refs] must be ["str"] or ["str1", "str2"]
+      $val = [ map{ [$_] } @$val ];  # --> [ ["str1"], ["str2] ]
+    }
+    elsif (all{ref} @$val) {
+      # [ [...], [...], [...] ]
+      # Must be list of [content subarrays]  -- OK AS IS
+      croak ivisq 'Invalid replacement value $val'
+        unless all{ any{!ref} @$_ } @$val; # [content] must incl a "str"
+    }
+    else { # [ mixed refs and "strings" ]  -- must be a single [content] spec
+      croak ivisq 'Invalid [content spec] replacement value $val'
+        if any{ ref && any{ref} @$_ } @$val;
+      $val = [ $val ];
+    }
+  }
+  elsif (defined $val) {
+    $val = [ [$val] ]; # "single string" --> [ ["string"] ]
+  }
+  $val
+}
+
+sub _para_to_rop($) {
+  my $maybe_para = shift // oops;
+  #if (my $row = $maybe_para->parent(ROW_COND)) {
+  if (my $row = eval{ $maybe_para->Hself_or_parent(ROW_COND) }) {
+    oops unless $row->tag eq "table:table-row"; ###TEMP
+    return wantarray ? ($row, "row") : $row
+  } else {
+    oops unless $maybe_para->tag =~ /^text:[ph]$/; ###TEMP
+    return wantarray ? ($maybe_para, "paragraph") : $maybe_para
+  }
+}
+sub _mk_tokhash_key($$) {
+  my ($rop, $tokname) = @_;
+  refaddr($rop)."/$tokname";
+}
+
+# This encapsulates the common token processing in both dryrun and substitution
+# passes.  Usually replacement values are saved by the first pass and so
+# this is not called on the 2nd pass, but in some cases (multiple instances
+# of the same tokname in a single paragraph) the 2nd pass has to re-process
+# a token from scratch.
+#
+# Returns () if the token should not be replaced, otherwise man details
+# including a (ref to) array of [content] specs.
+sub _get_content_list($$$$) {
+  my ($m, $tokname, $users_hash, $custom_mods) = @_;
+  my $val = $users_hash->{$tokname} // $users_hash->{'*'};
+  return undef
+    unless defined($val);
+  my $token = $m->{match};
+  my $para  = $m->{para};
+  if (ref($val) eq "CODE") {
+    (my $return_op, $val) = $val->($tokname, $token, $para, $custom_mods);
+    croak("callback returned Hr_SUBST without a value or vice-versa: $token")
+      if !defined($val) ^ !($return_op & Hr_SUBST);
+    return undef
+      unless defined($val);
+  } else {
+    croak "Invalid modifer ",visq(":$_")," in token $token",
+          "\n(A callback is required to use custom modifiers)\n"
+      for @$custom_mods;
+  }
+  my $content_list = _to_content_list($val);
+btw visnew->ivisq('CCC $val --> $content_list') if $debug;
+  $content_list
+}
+
+sub _get_cond_expr($) {
+  my $std_mods = shift;
+  my $cond_expr;
+  foreach (@$std_mods) {
+    my $cexpr;
+    if (/^rep/) {
+      if    (/^rep_first$/)     { $cexpr = '$i==0' }
+      elsif (/^rep_mid$/  )     { $cexpr = '$i>0 && $i<$N' }
+      elsif (/^rep_even_mid$/)  { $cexpr = '$i>0 && $i<$N && int($i%2)==0' }
+      elsif (/^rep_odd_mid$/)   { $cexpr = '$i>0 && $i<$N && int($i%2)==1' }
+      elsif (/^rep_last$/ )     { $cexpr = '$i==$N' }
+      elsif (/^rep_even_last$/) { $cexpr = '$i==$N && int($i%2)==0' }
+      elsif (/^rep_odd_last$/)  { $cexpr = '$i==$N && int($i%2)==1' }
+      elsif (/^rep_only$/)      { $cexpr = '$N==1' }
+      elsif (/^rep=(.*)$/ ) {
+        croak "Unsafe/disallowed expression ",visq($1)," in ",visq($_)
+          if do{ local $_ = $1;
+                 /[\@:\\]|\$(?![iN]\b)/a
+                 or grep{ !/(?:int|i|N|[0-9]+)$/ } /(\w+)/g };
+        $cexpr = $1;
+      }
+      else { oops } #out of sync changes to std_mod definitions?
+    }
+    if (defined $cexpr) {
+      croak "Multiple instantiation conditions not allowed in ",
+            visq(join ":", @$std_mods)
+        if defined($cond_expr);
+      $cond_expr = $cexpr;
+    }
+  }
+ return $cond_expr
+}
+
+sub _rt_dryrun($$$) {
+  my ($context, $users_hash, $tokhash) = @_;
 
   my @matches = $context->Hsearch($token_re, multi => TRUE);
   for my $m (@matches) {
-    my ($tokname, $std_mods, $custom_mods) = _parse_token( $m->{match} );
-
-    # Get the possibly-multiple values for this token.  $val is undef
-    # if the token is unknown and should not be replaced with anything
-    # (either because there was no hash entry or the callback says so).
-    my $val = $hash->{$tokname} // $hash->{'*'};
-    my $return_op = Hr_SUBST;
-    if (ref($val) eq "CODE") {
-      ($return_op, $val)
-        = $val->($tokname, $m->{match}, $m->{para}, $custom_mods);
-    }
+    my $token = $m->{match};
+    my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
+    my $content_list
+            = _get_content_list($m, $tokname, $users_hash, $custom_mods);
     next
-      if ! defined $val;
-
-    # Custom modifiers only make sense when using a callback
-    croak "Invalid modifer ",vis(":$_")," in token ",$m->{match}
-      for @$custom_mods;
-
-btw dvis '_dryrun_rt: $tokname $return_op $val' if $debug;
-
-    # Convert $val to a [list of values] if not alrady
-    if (ref $val) {
-      croak ivis 'Value contains an illegal ref type (not ARRAY): $val'
-        if any{ref($_) && ref($_) ne "ARRAY"} $val, eval{@$val};
-
-      if (none{ref} @$val) {
-        # $val is already a [list of plain "strings"]
-      }
-      elsif (all{
-              !ref($_) or   # "plain string"
-              any{ref} @$_  # [ "str", [...], ... ]
-             } @$val) {
-        # There are 3 levels;  $val must already be a list containing
-        # styled values like [...,[style desc],"string to be styled",...]
-        # (more than 3 levels implies an invalid [content] descriptor)
-      } else {
-        # $val is an array with only one nested array level; it must
-        # be a single single [styled content] descriptor
-        $val = [ $val ];
-      }
-    } else {
-      $val = [$val]; # a single "string"
+      unless defined $content_list;
+    my $cond_expr = _get_cond_expr($std_mods);
+    my ($rop, $rop_name) = _para_to_rop($m->{para});
+    my $tokhash_key = _mk_tokhash_key($rop, $tokname);
+    if (exists $tokhash->{$tokhash_key}) {
+      croak "The same token name may not appear multiple times in the same\n",
+            "$rop_name if the token has multiple values and/or when\n",
+            "conditional instantiation is used:\n$token\n"
+        if @$content_list > 1 or defined $cond_expr;
+      next; # 2nd instance will be parsed again in the substitution pass
     }
-
-    # Check for conditional-instantiation modifiers
-    my $cond_expr;
-    foreach (@$std_mods) {
-      if    (/^rep_first$/)     { $cond_expr = '$i==0' }
-      elsif (/^rep_mid$/  )     { $cond_expr = '$i>0 && $i<$N' }
-      elsif (/^rep_even_mid$/)  { $cond_expr = '$i>0 && $i<$N && int($i%2)==0' }
-      elsif (/^rep_odd_mid$/)   { $cond_expr = '$i>0 && $i<$N && int($i%2)==1' }
-      elsif (/^rep_last$/ )     { $cond_expr = '$i==$N' }
-      elsif (/^rep_even_last$/) { $cond_expr = '$i==$N && int($i%2)==0' }
-      elsif (/^rep_odd_last$/)  { $cond_expr = '$i==$N && int($i%2)==1' }
-      elsif (/^rep=(.*)$/ ) {
-        croak "Unsafe/disallowed expression in ",vis($_)
-          if do{ local $_ = $1;
-                 /[\@:\\]|\$(?![iN]\b)/a or (/(?!int\b)\w+/
-               };
-        $cond_expr = $1;
-      }
-    }
-
-    # Save info about this instance of $tokname
-    push @{ $tokname_infos }, {
-      para         => $m->{para},
-      para_voffset => $m->{para_voffset},
-      cond_expr    => $cond_expr, # undef if not conditional
-      values       => $val,
+    $tokhash->{$tokhash_key} = {
+      rop          => $rop,
+      tokname      => $tokname,
+      cond_expr    => $cond_expr,
+      content_list => $content_list,
+      token        => $token, # just for debugging?
     };
   }#foreach token in context
-}# _dryrun_rt
+}# _rt_dryrun
 
-sub _dosubst_rt($$$$$) { # returns Hreplace result list
-  my ($to_instantiate, $info_values, $i, $to_deletes, $to_keeps) = @_;
-  $to_instantiate->Hreplace($token_re, sub {
+sub _rt_dosubst($$$$) { # returns Hreplace result list
+  my ($context, $users_hash, $tokhash, $to_deletes) = @_;
+  $context->Hreplace($token_re, sub {
     my $m = shift;
-    my ($tokname, $std_mods, $custom_mods) = _parse_token( $m->{match} );
-    btw dvis '_dosubst_rt Hreplace cb: $tokname $info_values $i' if $debug;
-    return(0)
-      unless exists $info_values->{$tokname};
-    my $values = $info_values->{$tokname}
-                  // oops dvis '$tokname $info_values $m->{match}';
-    if (@$values == 0) { # *no* value; do not replace it
-      return(0);
+    my $token = $m->{match};
+    my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
+    my ($rop, $rop_name) = _para_to_rop($m->{para});
+    my $tokhash_key = _mk_tokhash_key($rop, $tokname);
+
+    my $content_list;
+    if (my $info = $tokhash->{$tokhash_key}) {
+      $info = $info;
+      $content_list = $info->{content_list} // oops;
+btw dvis 'XX retrieved $tokhash_key -> $info $content_list' if $debug;
+      oops dvis '$m\n$info\n' if @$content_list > 1;
+    } else {
+      # A token is not in %tokhash if it is in an added (replicated) rop,
+      # or the 2nd instance of the same token in rop (in which case
+      # multi-values are not allowed).
+      $content_list
+        = _get_content_list($m, $tokname, $users_hash, $custom_mods);
+btw dvis 'YY *no* info, $users_hash->{$tokname} $content_list' if $debug;
+      return(0)
+        unless defined $content_list;
+      oops dvis '$token' if @$content_list > 1;
     }
-    my $val = $values->[$i] // oops;
-    my $content = ref($val) ? $val : [$val];
+
+    my $content = $content_list->[0];
     foreach (@$std_mods) {
-      if    (/^rep/) {
-        next; # handled in _dryrun_rt
-      }
-      elsif ($_ eq "nb") {
+      if ($_ eq "nb") {
         foreach (@$content) {
           next if ref;
           s/ /\N{NO-BREAK SPACE}/sg;
@@ -201,161 +286,257 @@ sub _dosubst_rt($$$$$) { # returns Hreplace result list
           $$content[-1] .= "\n";
         }
       }
+      elsif (/^rep/) { }  # handled in first pass
       elsif (/^del/) {
-        my $to_delete =
-             $_ eq "delempty" ? $to_instantiate :  # rop
-             $_ eq "delrow"   ? $m->{para}->Hself_or_parent(ROW_COND)  :
-             $_ eq "delpara"  ? $m->{para}->Hself_or_parent(PARA_COND) :
-             /^del=(.+)$/     ? $m->{para}->Hself_or_parent($1)        :
-             oops;
-        if (none{ !ref && length } @$content) {
-          # The replacement value is empty
-          $to_deletes->{refaddr $to_delete} = $to_delete;
+        my $elt =
+          $_ eq "delempty" ? $rop :
+          $_ eq "delrow"   ? $m->{para}->Hself_or_parent(ROW_COND)  :
+          $_ eq "delpara"  ? $m->{para}->Hself_or_parent(PARA_COND) :
+          /^del=(.+)$/     ? $m->{para}->Hself_or_parent($1)        :
+          oops;
+        if (none { !ref && length } @$content) {
+          $to_deletes->{refaddr $elt} //= [1, $elt];
         } else {
-          $to_keeps->{refaddr $to_delete} = 1;
+          # Non-empty content in this token; suppress deletion
+          # even if another token with :del* is empty
+          $to_deletes->{refaddr $elt} = [0, $elt];
         }
       }
-      else { oops dvis '$_ $m->{match} $std_mods' }
+      else { oops dvis '$_ $std_mods $m' }
     }
+
     return (Hr_SUBST, $content);
   }, debug => $debug);
-}#_dosubst_rt
+}#_rt_dosubst
+
+sub _rt_replicate($$) {
+  my ($subtree_root, $tokhash) = @_;
+  # Find groups of adjacent rops containing alternative templates to
+  # instantiate (possibly-)multi-value tokens.  Replace the group by
+  # one or more rops, sufficient for the maximal number of values of
+  # any token they contain ("" will be supplied for 'missing' values
+  # of tokens with fewer values than the maximal token in a rop).
+  #
+  # These groups may be:
+  #   1. A lone regular rop (no conditionals)
+  #
+  #   2. A regular rop followed by conditionals (does not include
+  #      any *following* regular rop, which if present starts a new group).
+  #
+  #   3. A set of conditional rops not preceded by a regular rop
+
+  # Build hash of all rops containg any tokens
+  my %rophash; # [rop, cond_expr, tokinfo_list, maxN]
+  foreach my $info (values %$tokhash) {
+    # info->{rop tokname cond_expr content_list token}
+    my $rop = $info->{rop};
+    my $ropinfo = $rophash{refaddr $rop}
+                             //= {rop => $rop, tokinfos => [], maxN => 0};
+    if (defined(my $tok_cexpr = $info->{cond_expr})) {
+      if (defined(my $rop_cexpr = $ropinfo->{cond_expr})) {
+        croak "Conflicting conditionals in the same row:",
+              visq($tok_cexpr)," for {",$info->{tokname},"} vs. ",
+              visq($rop_cexpr)," for another token in ",refaddr($rop)
+        if $rop_cexpr ne $tok_cexpr;
+      } else {
+        $ropinfo->{cond_expr} = $tok_cexpr;
+      }
+      btw dvis 'C3 $tok_cexpr $info $ropinfo' if $debug;
+    }
+    push @{ $ropinfo->{tokinfos} }, $info;
+    $ropinfo->{maxN} = max($ropinfo->{maxN}, scalar(@{$info->{content_list}}));
+  }
+btw dvis 'RRR1 completed %rophash' if $debug;
+
+  my sub _process_group(@) {
+    my @group = @_;
+    my $first_rop = $group[0];
+    my $first_ropinfo = $rophash{refaddr $first_rop};
+
+    # If the first is unconditional, give it an always-true condition
+    # but move it to the end of the search order so it will be used only
+    # if none of the conditional rops work
+    if (!defined $first_ropinfo->{cond_expr}) {
+      foreach my $tokinfo (@{ $first_ropinfo->{tokinfos} }) {
+        oops dvis '$first_rop $first_ropinfo $tokhash' if defined $tokinfo->{cond_expr};
+      }
+      $first_ropinfo->{cond_expr} = "1";
+      push @group, (shift @group) ;
+    }
+
+    # To keep this logic simple, the appropriate template is always cloned
+    # and the copy inserted before $first_rop; at the end all templates
+    # are deleted, leaving only the clones behind.
+    my $N = $rophash{refaddr $first_rop}->{maxN};
+btw dvis 'AAA $N $first_ropinfo @group' if $debug;
+    for (my $i=0; $i < $N; $i++) {
+      my $templ;
+      foreach (@group) {
+        # Doing string eval using $i & $N
+        my $ok = eval $rophash{refaddr $_}->{cond_expr}
+                    // oops dvis '$@ $_ $rophash{refaddr($_)}';
+        if ($ok) {
+          $templ = $_;
+          last
+        }
+      }
+      croak "No conditionally-instantiatable row matches \$i=$i \$N=$N\n",
+            "The tokens brearing instantiation conditions are:\n   ",
+            join("\n   ",
+                 map{ uniq
+                      grep{/:rep/} map{ $_->{token} }
+                      @{ $rophash{refaddr $_}->{tokinfos} }
+                    } @group
+                ), "\n"
+        unless $templ;
+      if ($templ == $subtree_root) {
+        # Replication not possible when top context is the (one and only) rop
+        unless ($N == 1) {
+          my $info = $rophash{refaddr $templ}{tokinfos}[0];
+          my (undef, $rop_name) = _para_to_rop($templ);
+          croak "Replication to handle the $N-value token ", $info->{token},
+                " is not possible\n",
+                "because it is in a $rop_name which *is* the top context (",
+                addrvis($subtree_root),")\n"
+        }
+        return;
+      }
+      my $new_rop = $templ->clone;
+      $first_rop->insert_element($new_rop, position => PREV_SIBLING);
+btw ivis 'BBB inserted $new_rop as PREV_SIB of $first_rop\n' if $debug;
+      foreach my $tokinfo (@{ $rophash{refaddr $templ}->{tokinfos} }) {
+        my $tokname = $tokinfo->{tokname} // oops;
+        my $old_info = $tokhash->{ _mk_tokhash_key($templ, $tokname) };
+        my $new_key = _mk_tokhash_key($new_rop, $tokname);
+        oops if exists $tokhash->{$new_key};
+        $tokhash->{$new_key} = {
+          # This will be used by the Hreplace callback to find the value
+          #rop          => $new_rop,
+          #tokname      => $tokname,
+          #cond_expr    => $old_info->{cond_expr}, # just for debugging??
+          content_list => [ $old_info->{content_list}->[$i] // [""] ],
+          #token        => $old_info->{token}, # just for debugging??
+        };
+btw dvis 'B B Created $new_key $tokhash->{$new_key}' if $debug;
+      }
+btw dvis 'C C $i $new_rop' if $debug;
+    }
+    foreach my $rop (@group) {
+      btw ivis 'D D Deleting $rop' if $debug;
+      $rop->delete;
+      ### FOR DEBUG (not necessary)
+      foreach my $tokname(map{$_->{tokname}}
+                          @{ $rophash{refaddr $rop}{tokinfos} }) {
+        my $key = _mk_tokhash_key($rop, $tokname);
+        btw dvis 'Deleting OBSOLETE tokhash $key ...' if $debug;
+        delete $tokhash->{$key};
+      }
+    }
+  }
+
+  # Find groups of alternative conditional rops and expand/collapse each one
+  my %seen;
+  foreach my $ropaddr (keys %rophash) {
+    next if $seen{$ropaddr}++;
+    my $ropinfo = $rophash{$ropaddr};
+    my $rop = $ropinfo->{rop};
+
+    my @group = ($rop);
+    if ($ropinfo->{cond_expr}) {
+      # Search preceding adjacents to find the first in the group
+      my $elt = $rop;
+      while ($elt = $elt->prev_sibling) {
+        my $addr = refaddr $elt;
+        last unless defined(my $ropinfo = $rophash{$addr});
+        last if $seen{$addr}++;
+        push @group, $elt;
+        last if !defined $ropinfo->{cond_expr}; # stop *on* a non-conditional
+      }
+    }
+    # Search following adjacents to find the last in the group
+    my $elt = $rop;
+    while ($elt = $elt->next_sibling) {
+      my $addr = refaddr $elt;
+      last unless defined(my $ropinfo = $rophash{$addr});
+      last if !defined $ropinfo->{cond_expr}; # stop before a non-conditional
+      last if $seen{$addr}++;
+      push @group, $elt;
+    }
+    # N.B. Each isolated non-conditional rop is a "group", which will be
+    # replicated if it contains multi-valued tokens
+
+    _process_group(@group);
+  }
+  foreach my $ropaddr (keys %rophash) {
+    oops dvis 'missed $ropaddr' unless $seen{$ropaddr};
+    btw dvis 'seen: $ropaddr' if $debug;
+  }
+}#rt_replicate
 
 sub replace_tokens($$@) {
   my ($context, $hash, %opts) = @_;
   local $debug = $debug || $opts{debug};
+oops unless blessed($context);
 
-  $context->get_document->Hclean_for_cloning() unless caller eq __PACKAGE__;
+  unless (caller eq __PACKAGE__ or !$context->{parent}) {
+    my $doc = $context->document();
+    eval { $doc->Hclean_for_cloning() };
+    oops dvis '$context $context->{parent} $doc\n$@\n',fmt_tree($context, ancestors=>1) if $@;
+  }
 
-  # Perform a dry-run to locate all the tokens containing defined values.
-  {
-    my %tokname_infos;
-    _dryrun_rt($context, $hash, \%tokname_infos, %opts);
+# 1. Do a "dry-run" (search-only) pass to locate all tokens
+#    and save information about them in %tokhash including
+#    values and std_modifiers.
+#    Conditional-instantiation :modifiers (only) are evaluated
+#    and the resulting cond_expr, if any, saved.
+  my %tokhash;
+  _rt_dryrun($context, $hash, \%tokhash);
+  btw dvis 'AFTER DRY-RUN: %tokhash' if $debug;
+  #btw(Data::Dumper->new([\%tokhash])->Indent(1)->Maxdepth(2)->Dump) if $debug;
 
-btw dvis '%tokname_infos' if $debug;
+# 2. Scan %tokhash to identify template groups (either a lone regular
+#    rop which contains multi-value tokens, or adjacent rops containing
+#    tokens bearing instantiation conditions pluse possibly one regular rop).
+#
+#    Replicate/reduce as needed, leaving exactly one rop for each value
+#    of all multi-value tokens in the rop (defaulting to "" if one token
+#    has fewer values than another).  Adjusts %tokhash entries to match.
+#
+#    Replace the list of all values with the one specific value in
+#    the %tokhash entry
+  _rt_replicate($context, \%tokhash);
+btw dvis 'AFTER REPLICATE: %tokhash\ncontext=',fmt_tree($context) if $debug;
 
-    # Segregate templates for a given token name into groups to instantiate
-    # together taking into account the number of values for the token name.
-    # Each group has
-    #   - a lone unconditional token
-    #   - an unconditional token followed by conditional token(s)
-    #   - conditional token(s) not preceded by an unconditional token.
-    #
-    # Grouped templates must be in adjacent rops
-    # (rop=row, or para if not in a table).
-    # Multiple templates in the *same* rop are allowed but not well supported
-    # (FIXME - replicate within the rop?)
-    #
-    # rops are replicated as needed so that there are enough templates
-    # for the number of values (max of all tokens in the rop group),
-    # and the templates are edited to make their conditions match exactly
-    # one value index.
-    #
-    # Each time a template is replicated, *all* templates for any tokname
-    # in the same rop(s) are replicated similarly.  For example
-    #    {TokA}       {TokB}
-    # becomes
-    #    {TokA :_repi=0}       {TokB :_repi=0}
-    #    {TokA :_repi=1}       {TokB :_repi=1}
-    #    ...                    ...
-    # up to the maximum value index for TokA or TokB ("" is substituted for
-    # conditional tokens whose _repi exceeds the value range).
+# 3. Do Hreplace.  In the callback:
+#      If rop is not in %tokinfo:
+#        (Re)parse the token
+#      else
+#        Fetch saved values & std_modifiers
+#      (croak if multiple values at this point)
+#
+#      Apply std_mods to the value
+#      return (Hr_SUBST, [content])
+  my %to_deletes;
+  my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes);
 
-...find max $i for tokens in same rop
-...expand templates for each tokname to accomodate the the max $i
-   So afterwards
+# 4. Modify table cells to implement ":spandown" or ":delinteriorborders"
+  #_fixup_tables(\%toklist);  # FIXME todo
 
-
-
-    for my $tokname (keys %tokname_infos) {
-      my $infos = $tokname_infos{$tokname};
-      my @group;
-      for my $info (@$infos) {
-        my $rop = $info->{para}->parent(ROW_PARA) // $info->{para};
-        unless (@group) { @group = ([$rop, $info]); next }
-        my $prev_sib = $rop->next_sibling;
-        my $follows_prev = ($prev_sib && $prev_sib == $group[-1][0])
-        if ($follows_prev or ! $info->{cond_expr}) {
-          # This one starts a new group, either because it is not adjacent
-          # or it is adjancent but is unconditional (and not the first).
-          _setup_group(\@group);
-          @group = ([$rop, $info]);
-          next
-        }
-        push @group, [$rop, $info];
-      }
-      _setup_group(\@group) if @group;
+# 5. Delete elements which contained token(s) with :del* modifiers where
+#    all such tokens were replaced by ""
+  foreach (values %to_deletes) {
+    my ($to_delete, $elt) = @$_;
+    if ($to_delete) {
+      btw ivis 'DELETING due to :del* : $elt ',vis($elt->Hget_text) if $debug;
+      $elt->delete;
+    } else {
+      btw ivis 'KEEPING $elt because some tokens are not empty' if $debug;
     }
   }
 
-========
-  my $repl_count = 0;
-  # Visit rops in random order.  If it is a 'regular' row (not bearing :rep*
-  # modifiers), look for immediately-following alternatives template rows
-  # and replace the group with the final result.
-  my (%to_deletes, %to_keeps);
-  foreach (keys %rop_info) {
-    my $info = $rop_info{$_} // next; # previously deleted
-    next
-      if defined $info->{rep_expr};  # not a 'regular' row
-    delete $rop_info{$_};
-
-    my $rop = $info->{rop};
-    my @templates = ([$rop, "1"]);
-    while (my $next_elt = $templates[-1][0]->next_sibling) {
-      last unless (my $next_info = $rop_info{refaddr $next_elt});
-      last unless defined (my $rep_expr = $next_info->{rep_expr});
-      push @templates, [ $next_info->{rop}, $rep_expr ];
-      delete $rop_info{refaddr $next_elt};
-    }
-    push @templates, shift(@templates);
-    # Now @template holds special template rows, if any, followed by
-    # the "regular" row.  Each has an expression string (referencing $i & $N)
-    # which evals true if that row should be instantiated. The expr string
-    # for the regular row is "1" so it will always be used if none others
-    # are appropraite (or if there are no alternatives).
-
-btw dvis '  @templates' if $debug;
-
-    my $N = max( map{scalar(@$_)} values %{$info->{values}} );
-    for my $i (0..$N-1) {
-      my $templ;
-      foreach (@templates) {
-        if (eval $_->[1]) {
-          $templ = $_->[0];
-          last
-        }
-      }
-btw dvis '  $i $N $templ' if $debug;
-      my $to_instantiate = $templ->clone;
-      $rop->insert_element($to_instantiate, position => PREV_SIBLING);
-      my @r = _dosubst_rt($to_instantiate, $info->{values}, $i,
-                          \%to_deletes, \%to_keeps);
-      btw 'SUBST RESULTS: ',fmt_Hreplace_results(@r) if $debug;
-      $repl_count += scalar(@r);
-    }
-
-    # Finally, delete all the template rows.
-    foreach (@templates) {
-      btw dvis 'Deleting template $_ ',fmt_node($_->[0]) if $debug;
-      $_->[0]->delete
-    }
-  }
-  oops dvis 'Leftover %rop_info\n' if keys %rop_info;
-
-  # Delete rows, etc. with tokens containing :del* if all such tokens
-  # in the rop had empty values.
-  foreach my $address (keys %to_deletes) {
-    if ($to_keeps{$address}) {
-      btw ivis 'KEEPING $elt because only some tokens with :del* are empty' if $debug;
-      next;
-    }
-    my $elt = $to_deletes{$address};
-    btw ivis 'DELETING $elt due to :del*' if $debug;
-    $elt->delete
-  }
-
-  return $repl_count
+  # ??? should replace count be reduced by the number of tokens in
+  # objects removed via $to_delete ???
+  return scalar(@rr)
 }
 
 package ODF::MailMerge::Engine;
@@ -370,7 +551,7 @@ sub new {
   my $class = shift;
   my ($context, $proto_tag, %opts) = @_;
 
-  $context->get_document->Hclean_for_cloning(); # remove 'rsid' styles
+  $context->document->Hclean_for_cloning(); # remove 'rsid' styles
 
   my $m = $context->Hsearch($proto_tag)
            // croak ivis 'proto_tag $proto_tag not found';
@@ -395,21 +576,26 @@ sub add_record {
   $table->set_name($proto_table->Hgen_table_name());
   $proto_table->insert_element($table, position => PREV_SIBLING);
 
+  # Ordinarily replace_tokens() simply ignores {token}s which are
+  # not being replaced.  However during Mail Merge every token should
+  # have some value.  This wrapper callback enforces that.
   my sub wrapper_cb {
-    my ($tokname, $m, $custom_mods) = @_;
-    my $rop = Hr_SUBST;
-    my $val = $hash->{$tokname} // $hash->{'*'};
+    my ($tokname, $token, $para, $custom_mods) = @_;
+    my $return_op = Hr_SUBST;
+    my $key = exists($hash->{$tokname}) ? $tokname :
+              exists($hash->{'*'}) ? '*' :
+              croak "Unhandled token ", vis($token),
+                    " (the hash has no entry for '$tokname' or '*'";
+    my $val = $hash->{$key} //
+              croak "Unhandled token ", vis($token),
+                    " (the hash entry for '$key' contains undef)";
     if (ref($val) eq 'CODE') {
-      ($rop, $val) = $val->(@_);
+      ($return_op, $val) = $val->(@_);
+      croak "Unhandled token ", vis($token),
+            ivis '; the callback in hash{$key} returned ($return_op,$val)\n'
+        unless ($return_op & Hr_SUBST)==0 || defined $val;
     }
-    unless (defined $val) {
-      # Ordinarily replace_tokens() simply ignores {token}s which are
-      # not being replaced.  However during Mail Merge every token should
-      # have some value
-      croak "Unhandled token ",vis($m->{match}),
-            " (the hash has no entry for '$tokname' or '*')";
-    }
-    return ($rop, $val)
+    return ($return_op, ODF::MailMerge::_to_content_list($val))
   }
   ODF::MailMerge::replace_tokens($table, {'*' => \&wrapper_cb}, %opts);
 }

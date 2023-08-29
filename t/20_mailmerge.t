@@ -3,14 +3,16 @@ use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops/; # strict, warnings, Carp
 use t_TestCommon ':silent', # Test2::V0 etc.
-                 qw/:DEFAULT verif_no_internals_mentioned 
+                 qw/:DEFAULT verif_no_internals_mentioned
                     $debug $savepath/;
+
+#diag "WARNING: :silent temp disabled";
 
 #use Spreadsheet::Edit qw/:all/;
 use Spreadsheet::Edit qw/read_spreadsheet apply %crow/;
 
 use ODF::lpOD;
-use ODF::lpOD_Helper qw/:DEFAULT 
+use ODF::lpOD_Helper qw/:DEFAULT
                         TEXTLEAF_COND PARA_COND TEXTLEAF_OR_PARA_COND/;
 BEGIN {
   *_abbrev_addrvis = \&ODF::lpOD_Helper::_abbrev_addrvis;
@@ -26,7 +28,7 @@ sub get_text_with_paramarks($;$) {
   # Be careful to expand text from nested paragraphs (e.g. inside frames)
   # at the right position i.e. into the middle of the outer paragraph.
   my $result = "";
-  my $elt = $context->passes(TEXTLEAF_COND) 
+  my $elt = $context->passes(TEXTLEAF_COND)
             ? $context
             : $context->Hnext_elt($context, TEXTLEAF_OR_PARA_COND, PARA_COND);
   say "${dbpfx}Initial elt=",fmt_node($elt) if $debug;
@@ -56,7 +58,7 @@ my $input_path = tmpcopy_if_writeable($master_copy_path);
 ###############################
 ## NULL mail merge
 ###############################
-{ 
+{
   my $doc = odf_get_document($input_path, read_only => 1);
   my $body = $doc->get_body;
 
@@ -80,7 +82,7 @@ if ($debug) {
   #apply {
   #  $engine->add_record(\%crow, debug => $debug);
   #};
-  
+
   $engine->finish(debug => $debug);
   # n.b. the entire prototype table has been deleted now
 
@@ -102,7 +104,7 @@ if ($debug) {
 ###############################
 ## SINGLE RECORD mail merge
 ###############################
-{ 
+{
   my $doc = odf_get_document($input_path, read_only => 1);
   my $body = $doc->get_body;
 
@@ -116,7 +118,7 @@ if ($debug) {
   apply {
     $engine->add_record(\%crow, debug => $debug);
   };
-  
+
   $engine->finish(debug => $debug);
 
   my $after_text = $body->Hget_text();
@@ -125,10 +127,10 @@ if ($debug) {
   my $exp = $before_text;
   $exp =~ s/\{PROTO-TAG\}// or oops;
   $exp =~ s/\{LAST NAME.*?\}/Brown/ or oops;
-  $exp =~ s/\{FIRST NAME.*?\}/, John/ or oops;
+  $exp =~ s/\{FIRST NAME.*?\}/John/ or oops;
   $exp =~ s/\{Address1.*?\}/115 John Brown Road/ or oops;
   $exp =~ s/(?<=John Brown Road)\{Address2.*?\}//s or oops vis $exp;
-  $exp =~ s/\{CITY.*?\}/Lake\N{U+A0}Placid,/ or oops;
+  $exp =~ s/\{CITY.*?\}/Lake\N{U+A0}Placid/ or oops;
   $exp =~ s/\{STATE.*?\}/NY/ or oops;
   $exp =~ s/\{ZIP.*?\}/12946/ or oops;
   is ($after_text, $exp, "Single-record MaileMerge text check");
@@ -143,7 +145,7 @@ if ($debug) {
 ###############################
 ## MULTI RECORD mail merge
 ###############################
-{ 
+{
   my $doc = odf_get_document($input_path, read_only => 1);
   my $body = $doc->get_body;
 
@@ -157,7 +159,7 @@ if ($debug) {
   apply {
     $engine->add_record(\%crow, debug => $debug);
   };
-  
+
   $engine->finish(debug => $debug);
 
   my $after_text = $body->Hget_text();
@@ -174,10 +176,10 @@ if ($debug) {
 }
 
 ############################################
-## Check "*" wildcard hash entry 
+## Check "*" wildcard hash entry
 ## and unhandled {token} diagnosis
 ############################################
-{ 
+{
   my $doc = odf_get_document($input_path, read_only => 1);
   my $body = $doc->get_body;
 
@@ -188,26 +190,28 @@ if ($debug) {
   my %hash1 = (
     'CITY' => "Bogo City",
     '*' => sub {
-      my ($tokname, $m, $custom_mods) = @_;
-      say dvis '"*" callback: $tokname $m->{match} $custom_mods' if $debug;
-      $wildcard_got{$tokname}++;
+      my ($tokname, $token, $para, $custom_mods) = @_;
+      my @retvals;
       if (int(rand(2)) == 0) {
-        return(0); # do nothing
+        @retvals = (0); # do nothing
       } else {
-        return(Hr_SUBST, ["bogon"]);
+        @retvals = (Hr_SUBST, ["bogon"]);
       }
+      say dvis '"*" callback: $tokname $token $custom_mods @retvals' if $debug;
+      $wildcard_got{$tokname}++;
+      return @retvals;
     },
   );
   $engine->add_record(\%hash1, debug => $debug);
 
   is (\%wildcard_got,
       hash {
-        field 'FIRST NAME' => 1;
-        field 'LAST NAME' => 1;
-        field Address1 => 1;
-        field Address2 => 1;
-        field STATE => 1;
-        field ZIP => 1;
+        field 'FIRST NAME' => match qr/^[1-9]\d*$/;
+        field 'LAST NAME'  => match qr/^[1-9]\d*$/;;
+        field Address1     => match qr/^[1-9]\d*$/;;
+        field Address2     => match qr/^[1-9]\d*$/;;
+        field STATE        => match qr/^[1-9]\d*$/;;
+        field ZIP          => match qr/^[1-9]\d*$/;;
       },
       "'*' wildcard hash entry used correctly"
   );
@@ -216,7 +220,7 @@ if ($debug) {
   $engine->add_record(\%hash1, debug => $debug);
   $engine->add_record(\%hash1, debug => $debug);
   $engine->add_record(\%hash1, debug => $debug);
-  
+
   my %hash2 = (
     'FIRST NAME' => "John",
     'LAST NAME' => "Brown",
