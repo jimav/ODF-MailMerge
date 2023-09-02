@@ -37,6 +37,7 @@ sub append_para($$) {
     $para->set_text($textspec);
     say ivis 'AP appended $para $text' if $debug;
   }
+  confess "only returns 1 value" if wantarray;
   $para
 }
 
