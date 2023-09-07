@@ -1,10 +1,10 @@
 #!/usr/bin/env perl
 use FindBin qw($Bin);
 use lib $Bin;
-use t_Common qw/oops/; # strict, warnings, Carp
-use t_TestCommon ':silent', # Test2::V0 etc.
+use t_Common qw/oops btw btwN/; # strict, warnings, Carp
+use t_TestCommon #':silent', # Test2::V0 etc.
                  qw/:DEFAULT $debug $savepath/;
-#warn ":silent temp disabled";
+warn ":silent temp disabled";
 
 use LpodhTestUtils qw/append_para verif_normalized/;
 
@@ -12,7 +12,7 @@ use ODF::lpOD;
 use ODF::lpOD_Helper;
 use ODF::MailMerge;
 
-use constant FRAME_COND => 'draw:frame';
+use constant FRAME_FILTER => 'draw:frame';
 
 my $token_re = $ODF::MailMerge::token_re;
 
@@ -118,28 +118,28 @@ my $body = $doc->get_body;
        fmt_tree($table1));
 }
 
+#####################
+# :delempty test
+#####################
 {
   my $table2 = $body->Hsearch("{Table2ProtoTag}")->{para}->get_parent_table;
-
   my %hash = (
     # Address1 omitted from hash, so should not be deleted
     "FIRST NAME" => "John",
     "LAST NAME"  => "Brown",
-    "Address2" => "",
+    "Address2"   => "",
     "CITY" => "", "STATE" => "", "ZIP" => "",
     "Non-existent Token Name" => "Should not be found",
   );
   my $subst_count = replace_tokens($table2, \%hash, debug => $debug);
   is ($subst_count, 6, "table2 replace_tokens return count");
-
   my $text2 = $table2->Hget_text;
   like($text2, qr/^Brown, John.*\{Address1.*\}\{Table2ProtoTag\}$/,
-       ":delempty test",
-       fmt_tree($table2));
+       ":delempty test", fmt_tree($table2));
 }
 
 { # Callback with custom modifier
-my $frame = $body->Hsearch("{Date:mymodif}")->{para}->parent(FRAME_COND);
+my $frame = $body->Hsearch("{Date:mymodif}")->{para}->parent(FRAME_FILTER);
 my %hash = (
   "Date" => sub {
     my ($key, $token, $para, $custom_mods) = @_;
@@ -166,7 +166,7 @@ sub test_rt($$$;$) {
   #my $desc = "{${tokname}".join("/", @$mods)."}";
   my $desc = join("/", @texts);
   $desc .= " [$num_values vals]" if $num_values > 1;
-  my @rops = map{ append_para($frame, $_) } @texts;
+  my @rops = map{ scalar append_para($frame, $_) } @texts;
   my $hash = {
     Abogon => "bogon-a",
     $tokname => ($num_values==1 && rand(1) >= 0.5)
@@ -175,9 +175,9 @@ sub test_rt($$$;$) {
   };
   my $exp_repl_count = $num_values;
   my $testname = "repl_count==$exp_repl_count with ".$desc;
-  note dvis 'TEST @rops\nframe',fmt_tree($frame) if $debug;
+  btwN 1,dvis 'TEST test_rt: @rops\nframe',fmt_tree($frame) if $debug;
   my $repl_count;
-  if ($num_values == 1) {
+  if ($num_values == 1 && none{ /:rep/ } @$mods) {
     $repl_count = eval{ replace_tokens($rops[ int(rand(scalar @rops)) ],
                                        $hash, debug => $debug) };
   } else {
@@ -187,7 +187,7 @@ sub test_rt($$$;$) {
   if ($failure_exp_regex) {
     like($@, $failure_exp_regex, "$desc (GOT EXPECTED FAILURE?)");
   } else {
-    confess("Unexpected exception:\n$@") if $@;
+    croak("Unexpected exception:\n$@\n") if $@;
     is($repl_count, $exp_repl_count, $testname);
   }
 }
@@ -314,6 +314,12 @@ test_multi(["XXX[{TokA:delempty} {TokB:delempty}]",
            "", # all deleted because all tokens with :delempty are empty
            ":delempty-all-deleted"
 );
+
+###########################
+# :rmbb and :span (not really tested)
+###########################
+test_rt( "MyTok", [':span'], 1 );
+test_rt( "MyTok", [':rmsb'], 1 );
 
 # TODO FUTURE: TEst :span and eliding borders
 

@@ -13,7 +13,7 @@ use Spreadsheet::Edit qw/read_spreadsheet apply %crow/;
 
 use ODF::lpOD;
 use ODF::lpOD_Helper qw/:DEFAULT
-                        TEXTLEAF_COND PARA_COND TEXTLEAF_OR_PARA_COND/;
+                        TEXTLEAF_FILTER PARA_FILTER TEXTLEAF_OR_PARA_FILTER/;
 BEGIN {
   *_abbrev_addrvis = \&ODF::lpOD_Helper::_abbrev_addrvis;
 }
@@ -28,13 +28,13 @@ sub get_text_with_paramarks($;$) {
   # Be careful to expand text from nested paragraphs (e.g. inside frames)
   # at the right position i.e. into the middle of the outer paragraph.
   my $result = "";
-  my $elt = $context->passes(TEXTLEAF_COND)
+  my $elt = $context->passes(TEXTLEAF_FILTER)
             ? $context
-            : $context->Hnext_elt($context, TEXTLEAF_OR_PARA_COND, PARA_COND);
+            : $context->Hnext_elt($context, TEXTLEAF_OR_PARA_FILTER, PARA_FILTER);
   say "${dbpfx}Initial elt=",fmt_node($elt) if $debug;
 
   while ($elt) {
-    if ($elt->passes(PARA_COND)) {
+    if ($elt->passes(PARA_FILTER)) {
       say "${dbpfx}RECURSING INTO ",_abbrev_addrvis($elt) if $debug;
       (local $dbpfx = $dbpfx) =~ s/(\d+)/ $1 + 1 /e;
       $result .= __SUB__->($elt, $paramark);
@@ -43,10 +43,10 @@ sub get_text_with_paramarks($;$) {
       say "${dbpfx}---appending ", vis $t if $debug;
       $result .= $t;
     }
-    $elt = $elt->Hnext_elt($context, TEXTLEAF_OR_PARA_COND, PARA_COND);
+    $elt = $elt->Hnext_elt($context, TEXTLEAF_OR_PARA_FILTER, PARA_FILTER);
     say "${dbpfx}NEXT (within ",_abbrev_addrvis($context),") elt=", fmt_node($elt) if $debug;
   }
-  $result .= $paramark if $context->passes(PARA_COND);
+  $result .= $paramark if $context->passes(PARA_FILTER);
   say "${dbpfx}*FINAL* result for ",addrvis($context),ivis ' $result' if $debug;
   $result
 }

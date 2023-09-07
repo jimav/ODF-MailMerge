@@ -1,11 +1,18 @@
 #!/usr/bin/env perl
 use strict; use warnings; use feature qw/say/;
+STDOUT->autoflush; STDERR->autoflush;
+use open IO => ':locale';
+
 use FindBin qw($Bin);
 
+use File::Basename qw/basename/;
 use DateTime ();
 use DateTime::Format::Strptime ();
+use Getopt::Long qw/GetOptions/;
 
 use Spreadsheet::Edit qw/read_spreadsheet alias apply sort_rows %crow/;
+use Data::Dumper::Interp qw/dvis qsh qshlist/;
+Data::Dumper::Interp::addrvis_digits(5);
 
 use ODF::lpOD;
 use ODF::lpOD_Helper;
@@ -15,10 +22,23 @@ sub commify_number($) {
   scalar reverse (reverse($_[0]) =~ s/(\d\d\d)(?=\d)(?!\d*\.)/$1,/gr)
 }
 
-my $outpath = "Ex_Famnames_output.odt";
+my ($outpath, $also_pdf, $also_txt, $skelpath, $dbpath);
+GetOptions(
+  'o|outpath=s'  => \$outpath,
+  '--pdf'        => \$also_pdf,
+  '--txt'        => \$also_txt,
+  's|skelpath=s' => \$skelpath,
+  'd|dbpath=s'   => \$dbpath,
+) or die "bad arguments";
 
-my $skelpath = "$Bin/Ex_Famnames_Skeleton.odt";
-my $dbpath = "$Bin/family_names.csv";
+$skelpath //= "$Bin/Ex_Famnames_Skeleton.odt";
+
+$outpath //= "./".basename($skelpath) =~ s/_?Skel[a-z]*//r =~ s/\.odt/_output.odt/r;
+die if $outpath eq $skelpath;
+
+$dbpath //= "$Bin/family_names.csv";
+
+#---------------------------------------------------------------
 
 warn "> Reading $skelpath\n";
 my $doc = odf_get_document($skelpath, read_only => 1) // die "$skelpath : $!";
@@ -88,9 +108,68 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
 }
 
 ########################################
+# Generate the by-origin table using a separate row for each name
+# For brevity, origins including English are omitted.
+########################################
+{ my %Origin_to_Names;
+  apply {
+    push @{ $Origin_to_Names{$crow{Origin}} }, $crow{Name}
+      if $crow{Origin} !~ /English/;
+  };
+  { my $engine = ODF::MailMerge::Engine->new($body, "{ByOriginNonEng_Proto}");
+    foreach my $origin (sort keys %Origin_to_Names) {
+      my $namelist = $Origin_to_Names{$origin};
+  #use Data::Dumper::Interp; say dvis '## $origin\n   $namelist';
+  die "bug" if grep /\n/s, @$namelist;
+      my $hash = {
+        Origin => $origin,
+        Names  => $namelist,
+      };
+      $engine->add_record($hash);
+    }
+    $engine->finish();
+  }
+}
+
+########################################
+# Generate the complete by-origin table.
+# The prototype encapsulates the {Name} tag in a frame
+# so the frame is replicated instead of the whole row.
+########################################
+{ my %Origin_to_Names;
+  apply {
+    push @{ $Origin_to_Names{$crow{Origin}} }, $crow{Name};
+  };
+  { my $engine = ODF::MailMerge::Engine->new($body, "{ByOrigin2_Proto}");
+    foreach my $origin (sort keys %Origin_to_Names) {
+      my $namelist = $Origin_to_Names{$origin};
+  #use Data::Dumper::Interp; say dvis '## $origin\n   $namelist';
+  die "bug" if grep /\n/s, @$namelist;
+      my $hash = {
+        Origin => $origin,
+        Names  => $namelist,
+      };
+      $engine->add_record($hash, debug => 0);
+    }
+    $engine->finish();
+  }
+}
+
+########################################
 # Write out the result
 ########################################
 warn "> Writing $outpath\n";
 $doc->save(target => $outpath);
 
-#end
+if ($also_pdf) {
+  my @cmd = ("libreoffice", "--convert-to", "pdf", $outpath);
+  warn "> ", qshlist(@cmd),"\n";
+  system @cmd;
+}
+if ($also_txt) {
+  my @cmd = ("libreoffice", "--convert-to", "txt", $outpath);
+  warn "> ", qshlist(@cmd),"\n";
+  system @cmd;
+}
+
+exit 0;

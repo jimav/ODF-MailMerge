@@ -27,19 +27,25 @@ use Scalar::Util qw/refaddr blessed/;
 use List::Util qw/first any none all max min sum0/;
 use List::MoreUtils qw/before after uniq/;
 use Data::Dumper::Interp 6.004
-       qw/visnew ivis dvis dvisq ivisq vis visq addrvis/;
-use Spreadsheet::Edit::Log qw/oops btw/;
+       qw/visnew ivis dvis dvisq ivisq vis visq avis avisq addrvis/;
+use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=M${lno}:' ;
 use Clone ();
 
 use ODF::lpOD;
 use ODF::lpOD_Helper 6.001 qw/:DEFAULT
-                              PARA_COND
+                              PARA_FILTER
                               Hr_MASK
                               arraytostring hashtostring/;
 
-use constant ROW_COND => "table:table-row";
-use constant ROW_OR_PARA_COND => Hor_cond(PARA_COND, ROW_COND);
-use constant ROW_OR_BODYROOT_COND => "table:table-row|office:text";
+use constant ROW_FILTER => "table:table-row";
+use constant CELL_FILTER => "table:table-cell";
+use constant FRAME_FILTER => "draw:frame";
+use constant SECTION_FILTER => "text:section";
+use constant ROW_OR_SECTION_FILTER => Hor_cond(ROW_FILTER, SECTION_FILTER);
+use constant FRAME_OR_SECTION_OR_ROW => Hor_cond(ROW_FILTER, FRAME_FILTER, SECTION_FILTER);
+use constant FRAME_OR_SECTION_FILTER => Hor_cond(FRAME_FILTER, SECTION_FILTER);
+use constant ROW_OR_PARA_FILTER => Hor_cond(PARA_FILTER, ROW_FILTER);
+use constant ROW_OR_BODYROOT_FILTER => "table:table-row|office:text";
 
 use Exporter 'import';
 our @EXPORT = qw/replace_tokens/;
@@ -50,8 +56,6 @@ our $debug;
 our $token_re = qr/\{ (?<tokname> (?:[^:\{\}\\\n]+|\\[^\n])+    )
                       (?<mods>    (?: : (?:[^:\{\}\\]+|\\.)+ )* )
                    \}/xs;
-
-# FIXME: Add :spanup (and :spanleft?) to span if *cell* content is blank
 
 sub _parse_token($) {
   my $t = shift;
@@ -81,7 +85,9 @@ sub _parse_token($) {
     }
     if (/^(?: nb|unfold|breakmulti
              |del(?:empty|row|para|=.*)
-             |rep(?:_first|_mid|_last|=.*)
+             |rep(?:_first|_notfirst|_mid|_last|=.*)
+             |rmsb  # remove shared border between replicates
+             |span  # span down through empty cells below
              |reptag=.*
           )$/xs) {
       push @std_mods, $_;
@@ -127,19 +133,43 @@ sub _to_content_list(_) {
 }
 
 sub _para_to_rop($) {
-  my $maybe_para = shift // oops;
-  #if (my $row = $maybe_para->parent(ROW_COND)) {
-  if (my $row = eval{ $maybe_para->Hself_or_parent(ROW_COND) }) {
-    oops unless $row->tag eq "table:table-row"; ###TEMP
-    return wantarray ? ($row, "row") : $row
-  } else {
-    oops unless $maybe_para->tag =~ /^text:[ph]$/; ###TEMP
-    return wantarray ? ($maybe_para, "paragraph") : $maybe_para
+  my $elt = shift // oops;
+  # If $elt is encapsulated in a frame *within a table cell*, then
+  # the frame is replicated.  This permits run-together replicates
+  # if the frams are anchored "as character", for example to make
+  # comma-separated lists.
+  # TODO: Also replicated sections??
+  #
+  # Otherwise, if $elt is in a table row (in the same section or frame,
+  # if applicable) then that row is replicated.
+  #
+  # If none of the above, then the containing paragraph is replicated.
+  #
+  if (my $frame = $elt->Hself_or_parent(FRAME_FILTER, CELL_FILTER)) {
+    if ($frame->Hself_or_parent(CELL_FILTER, FRAME_OR_SECTION_FILTER)) {
+      return wantarray ? ($frame, "frame") : $frame
+    }
   }
+  if (my $row = $elt->Hself_or_parent(ROW_FILTER, FRAME_OR_SECTION_FILTER)) {
+    return wantarray ? ($row, "row") : $row
+  }
+  my $para = $elt->Hself_or_parent(PARA_FILTER, SECTION_FILTER) // oops;
+  return wantarray ? ($para, "paragraph") : $para
 }
 sub _mk_tokhash_key($$) {
   my ($rop, $tokname) = @_;
+oops unless defined $tokname;
   refaddr($rop)."/$tokname";
+}
+sub _fmt_tokhash($) {
+  my $tokhash = shift;
+  visnew->Sortkeys(sub{
+    my $h = shift;
+    [ sort{ ref($h->{$a}) eq "HASH"
+         ? (($h->{$a}->{tokname}//$a) cmp ($h->{$b}->{tokname}//$b))
+         : ($a cmp $b)
+      } keys %$h ]
+  })->dvis('%$tokhash')
 }
 
 # This encapsulates the common token processing in both dryrun and substitution
@@ -156,8 +186,8 @@ sub _get_content_list($$$$) {
   return undef
     unless defined($val);
   my $token = $m->{match};
-  my $para  = $m->{para};
   if (ref($val) eq "CODE") {
+    my $para  = $m->{para};
     (my $return_op, $val) = $val->($tokname, $token, $para, $custom_mods);
     croak("callback returned Hr_SUBST without a value or vice-versa: $token")
       if !defined($val) ^ !($return_op & Hr_SUBST);
@@ -169,17 +199,18 @@ sub _get_content_list($$$$) {
       for @$custom_mods;
   }
   my $content_list = _to_content_list($val);
-btw visnew->ivisq('CCC $val --> $content_list') if $debug;
+btw visnew->dvisq('CCC $content_list') if $debug;
   $content_list
 }
 
-sub _get_cond_expr($) {
+sub _get_replicate_opts($) {
   my $std_mods = shift;
-  my $cond_expr;
+  my ($cond_expr, $rmsb, $span);
   foreach (@$std_mods) {
     my $cexpr;
     if (/^rep/) {
       if    (/^rep_first$/)     { $cexpr = '$i==0' }
+      elsif (/^rep_notfirst$/)  { $cexpr = '$i>0' }
       elsif (/^rep_mid$/  )     { $cexpr = '$i>0 && $i<$N' }
       elsif (/^rep_even_mid$/)  { $cexpr = '$i>0 && $i<$N && int($i%2)==0' }
       elsif (/^rep_odd_mid$/)   { $cexpr = '$i>0 && $i<$N && int($i%2)==1' }
@@ -195,29 +226,32 @@ sub _get_cond_expr($) {
         $cexpr = $1;
       }
       else { oops } #out of sync changes to std_mod definitions?
+      if (defined $cexpr) {
+        croak "Multiple instantiation conditions not allowed in ",
+              visq(join ":", @$std_mods)
+          if defined($cond_expr);
+        $cond_expr = $cexpr;
+      }
     }
-    if (defined $cexpr) {
-      croak "Multiple instantiation conditions not allowed in ",
-            visq(join ":", @$std_mods)
-        if defined($cond_expr);
-      $cond_expr = $cexpr;
-    }
+    elsif ($_ eq "rmsb") { $rmsb = 1 }
+    elsif ($_ eq "span") { $span = 1 }
   }
- return $cond_expr
+ return ($cond_expr, $rmsb, $span)
 }
 
 sub _rt_dryrun($$$) {
   my ($context, $users_hash, $tokhash) = @_;
 
-  my @matches = $context->Hsearch($token_re, multi => TRUE);
-  for my $m (@matches) {
+btw dvis 'dryrun $context = ',fmt_tree_brief($context) if $debug;
+  for my $m ( $context->Hsearch($token_re, multi => TRUE) ) {
     my $token = $m->{match};
+btw dvis '_rt_dryrun $token' if $debug;
     my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
     my $content_list
             = _get_content_list($m, $tokname, $users_hash, $custom_mods);
     next
       unless defined $content_list;
-    my $cond_expr = _get_cond_expr($std_mods);
+    my ($cond_expr, $rmsb, $span) = _get_replicate_opts($std_mods);
     my ($rop, $rop_name) = _para_to_rop($m->{para});
     my $tokhash_key = _mk_tokhash_key($rop, $tokname);
     if (exists $tokhash->{$tokhash_key}) {
@@ -230,38 +264,112 @@ sub _rt_dryrun($$$) {
     $tokhash->{$tokhash_key} = {
       rop          => $rop,
       tokname      => $tokname,
-      cond_expr    => $cond_expr,
       content_list => $content_list,
       token        => $token, # just for debugging?
+      (defined($cond_expr) ? (cond_expr => $cond_expr) : ()),
+      ($rmsb               ? (rmsb => 1) : ()),
+      ($span               ? (span => 1) : ()),
     };
   }#foreach token in context
 }# _rt_dryrun
 
-sub _rt_dosubst($$$$) { # returns Hreplace result list
-  my ($context, $users_hash, $tokhash, $to_deletes) = @_;
+sub _content_is_empty($) {
+  my $content = shift;
+  none { !ref && length } @$content
+}
+
+sub _rm_cell_border($$$) {
+  my ($doc, $cell, $propname) = @_;
+  my $stn = $cell->get_attributes->{"table:style-name"} // oops;
+  my $st = $doc->get_style('table-cell', $stn) // oops;
+  my $props = $st->get_properties();
+  if (my $v = $props->{$propname}) {
+    return if $v eq "none";
+  }
+  elsif ($v = $props->{"fo:border"}) {
+    oops if $props->{$propname};
+    $props->{"fo:border-top"} = $props->{"fo:border-left"}
+      = $props->{"fo:border-right"} = $props->{"fo:border-bottom"}
+      = delete($props->{"fo:border"});
+  }
+  else { oops $cell->Hget_text(), " -- cell has neither fo:border or $propname"; }
+  $props->{$propname} = "none";
+  my $new_st = $doc->Hautomatic_style("table-cell", %$props);
+  $cell->set_attributes("table:style-name", $new_st->get_name);
+}
+sub _do_rm_border($$$) {
+  my ($doc, $para, $propname) = @_;
+  _rm_cell_border($doc, $para->get_parent_cell//oops, $propname);
+}
+sub _do_rmtb($$) { &_do_rm_border(@_, "fo:border-top"   ) }
+sub _do_rmbb($$) { &_do_rm_border(@_, "fo:border-bottom") }
+
+sub _do_span($) {
+  my $spanning_cell = shift;
+  # This is called after substitutions.  Span the cell down over
+  # any cells below which are empty.  The empty cells might or might not
+  # be part of a replicate group!
+  my $table = $spanning_cell->get_parent_table;
+  my ($numrows, $numcols) = $table->get_size;
+  my (undef, $rx, $cx) = $spanning_cell->get_position;
+  my ($rspan, $cspan) = $spanning_cell->get_span;
+  # r0:before r1:before r2:$cell  r3:"" c4:"" r5:NotEmpty     (numrows==6)
+  #                     nrspan==1 =2    =3    (=4)
+  my $new_rspan = $rspan; # e.g. 1
+  while (($rx+$new_rspan) < $numrows) {
+    my $row = $table->get_row($rx+$new_rspan);
+    my $this_cell = $row->get_cell($cx);
+    last if $this_cell->Hget_text() ne "";
+    btw dvis 'DELETING CONTENT OF $this_cell $rx+$new_rspan: ',visq($this_cell->Hget_text) if $debug;
+    # Entirely delete paragraphs (and nested tables or sections...)
+    # from cells to be covered; otherwise they seem to end up in the
+    # spanning cell (contrary to what ODF::lpOD docs imply about covered cells).
+    foreach ($this_cell->children) {
+      btw "    (deleting $_)" if $debug;
+      $_->delete;
+    }
+    ++$new_rspan;
+  }
+  if ($new_rspan != $rspan) {
+    btw dvis 'SET SPAN: $rspan, $new_rspan $rx $cx $cspan $spanning_cell' if $debug;
+    $spanning_cell->set_span(rows => $new_rspan, columns => $cspan);
+  }
+}
+
+sub _rt_dosubst($$$$$) { # returns Hreplace result list
+  my ($context, $users_hash, $tokhash, $to_deletes, $spandowns) = @_;
+  my $doc = $context->document();
   $context->Hreplace($token_re, sub {
     my $m = shift;
     my $token = $m->{match};
+##btw "==============================================\n",
+##    dvis 'Hreplace cb TOP $token\ncontext=',fmt_tree($context, wi=>3),
+##    "\n===(TOP $token)===============================\n" if $debug;
     my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
     my ($rop, $rop_name) = _para_to_rop($m->{para});
     my $tokhash_key = _mk_tokhash_key($rop, $tokname);
 
     my $content_list;
-    if (my $info = $tokhash->{$tokhash_key}) {
-      $info = $info;
+    my $info = $tokhash->{$tokhash_key};
+    if ($info) {
       $content_list = $info->{content_list} // oops;
 btw dvis 'XX retrieved $tokhash_key -> $info $content_list' if $debug;
       oops dvis '$m\n$info\n' if @$content_list > 1;
+      _do_rmtb($doc, $m->{para}) if $info->{rmtb};
+      _do_rmbb($doc, $m->{para}) if $info->{rmbb};
     } else {
-      # A token is not in %tokhash if it is in an added (replicated) rop,
-      # or the 2nd instance of the same token in rop (in which case
-      # multi-values are not allowed).
+      # A token is not in %tokhash if it is the 2nd instance of the same
+      # token in a rop (in which case multi-values are not allowed).
       $content_list
         = _get_content_list($m, $tokname, $users_hash, $custom_mods);
-btw dvis 'YY *no* info, $users_hash->{$tokname} $content_list' if $debug;
+btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' if $debug;
       return(0)
         unless defined $content_list;
-      oops dvis '$token' if @$content_list > 1;
+      croak dvisq 'An unhandled situation arose with token $token\n',
+            "Either there is a table row containing both tokens in frames and non-framed\n",
+            "tokens, or some other situation which is not supported.\n",
+            "If using frames, all tokens in a table row should be encapsulated.\n"
+        if @$content_list > 1;
     }
 
     my $content = $content_list->[0];
@@ -286,15 +394,31 @@ btw dvis 'YY *no* info, $users_hash->{$tokname} $content_list' if $debug;
           $$content[-1] .= "\n";
         }
       }
-      elsif (/^rep/) { }  # handled in first pass
+      elsif ($_ eq "rmsb") { } # handled in 1st pass, set {rmtb/rmbb} in $info
+      elsif ($_ eq "span") {
+        # If the rop is in a replicate group (possibly by itself), then
+        # $info->{span} is set in the first replicate only.
+        # Otherwise this is an odd case (2nd token in same paragraph)
+        # where there is no $info
+        if (!$info || $info->{span}) {
+          # Do *not* look outside a Frame wrapper possibly in a cell
+          if (my $cell = $m->{para}->Hparent(CELL_FILTER, FRAME_FILTER)) {
+            my $rop = $cell->parent(ROW_FILTER);
+            # Record the rop so we can later check that it wasn't deleted
+            # before fiddling with the cell
+            $spandowns->{refaddr $cell} = [$rop, $cell];
+          }
+        }
+      }
+      elsif (/^rep/)       { } # handled in 1st pass
       elsif (/^del/) {
         my $elt =
           $_ eq "delempty" ? $rop :
-          $_ eq "delrow"   ? $m->{para}->Hself_or_parent(ROW_COND)  :
-          $_ eq "delpara"  ? $m->{para}->Hself_or_parent(PARA_COND) :
+          $_ eq "delrow"   ? $m->{para}->Hself_or_parent(ROW_FILTER)  :
+          $_ eq "delpara"  ? $m->{para}->Hself_or_parent(PARA_FILTER) :
           /^del=(.+)$/     ? $m->{para}->Hself_or_parent($1)        :
           oops;
-        if (none { !ref && length } @$content) {
+        if (_content_is_empty($content)) {
           $to_deletes->{refaddr $elt} //= [1, $elt];
         } else {
           # Non-empty content in this token; suppress deletion
@@ -304,6 +428,10 @@ btw dvis 'YY *no* info, $users_hash->{$tokname} $content_list' if $debug;
       }
       else { oops dvis '$_ $std_mods $m' }
     }
+
+##btw "==============================================\n",
+##    dvis 'Hreplace cb BOTTOM $token returning $content\ncontext=',fmt_tree($context, wi=>3),
+##    "\n===(BOTTOM $token)===============================\n" if $debug;
 
     return (Hr_SUBST, $content);
   }, debug => $debug);
@@ -325,7 +453,7 @@ sub _rt_replicate($$) {
   #
   #   3. A set of conditional rops not preceded by a regular rop
 
-  # Build hash of all rops containg any tokens
+  # Build hash of all rops containg any tokens (that are being replaced)
   my %rophash; # [rop, cond_expr, tokinfo_list, maxN]
   foreach my $info (values %$tokhash) {
     # info->{rop tokname cond_expr content_list token}
@@ -341,7 +469,7 @@ sub _rt_replicate($$) {
       } else {
         $ropinfo->{cond_expr} = $tok_cexpr;
       }
-      btw dvis 'C3 $tok_cexpr $info $ropinfo' if $debug;
+      btw dvis 'C3 $tok_cexpr $info\n  $ropinfo' if $debug;
     }
     push @{ $ropinfo->{tokinfos} }, $info;
     $ropinfo->{maxN} = max($ropinfo->{maxN}, scalar(@{$info->{content_list}}));
@@ -368,61 +496,80 @@ btw dvis 'RRR1 completed %rophash' if $debug;
     # and the copy inserted before $first_rop; at the end all templates
     # are deleted, leaving only the clones behind.
     my $N = $rophash{refaddr $first_rop}->{maxN};
-btw dvis 'AAA $N $first_ropinfo @group' if $debug;
+btw dvis 'GGG $N @group' if $debug;
+    my $rop0;
     for (my $i=0; $i < $N; $i++) {
       my $templ;
       foreach (@group) {
-        # Doing string eval using $i & $N
-        my $ok = eval $rophash{refaddr $_}->{cond_expr}
-                    // oops dvis '$@ $_ $rophash{refaddr($_)}';
-        if ($ok) {
-          $templ = $_;
-          last
-        }
+        ($templ = $_), last # string eval using $i & $N
+          if eval $rophash{refaddr $_}->{cond_expr} // oops dvis '$@ $_ %rophash';
       }
-      croak "No conditionally-instantiatable row matches \$i=$i \$N=$N\n",
-            "The tokens brearing instantiation conditions are:\n   ",
-            join("\n   ",
-                 map{ uniq
-                      grep{/:rep/} map{ $_->{token} }
-                      @{ $rophash{refaddr $_}->{tokinfos} }
-                    } @group
-                ), "\n"
-        unless $templ;
-      if ($templ == $subtree_root) {
+      if (! $templ) {
+        my (undef, $rop_name) = _para_to_rop($group[0]);
+        croak "No conditionally-instantiatable $rop_name matches \$i=$i \$N=$N\n",
+              "The tokens in the group of adjacent items are:\n   ",
+              join("\n   ",
+                   map{ map{ $_->{token} } @{ $rophash{refaddr $_}->{tokinfos} } } @group
+                  ), "\n(the missing one might be separated from the group by something)\n"
+              ,"subtree_root:",fmt_tree_brief($subtree_root),"\n"
+      }
+      my $new_rop;
+      if ($N == 1) {
+        # Don't clone, this template will not be used more than once
+btw ivis 'GGG-Using $templ DIRECTLY; text=', $templ->Hget_text(),"\n" if $debug;
+        @group = grep{$_ != $templ} @group;
+      }
+      elsif ($templ == $subtree_root) {
         # Replication not possible when top context is the (one and only) rop
         unless ($N == 1) {
           my $info = $rophash{refaddr $templ}{tokinfos}[0];
           my (undef, $rop_name) = _para_to_rop($templ);
           croak "Replication to handle the $N-value token ", $info->{token},
                 " is not possible\n",
-                "because it is in a $rop_name which *is* the top context (",
-                addrvis($subtree_root),")\n"
+                "because it is in a $rop_name which *is* the top context\n"
         }
-        return;
+      } else {
+        $new_rop = $templ->clone;
+        if ($templ->tag eq "draw:frame") {
+         my $orig_name = $templ->att("draw:name") // oops;
+         $new_rop->set_att("draw:name" => $orig_name."_odMM$i");
+        }
+        $first_rop->insert_element($new_rop, position => PREV_SIBLING);
+btw ivis 'GGG-Insert $new_rop (cloned from $templ) as PREV_SIB of $first_rop ', visq($new_rop->Hget_text()) if $debug;
       }
-      my $new_rop = $templ->clone;
-      $first_rop->insert_element($new_rop, position => PREV_SIBLING);
-btw ivis 'BBB inserted $new_rop as PREV_SIB of $first_rop\n' if $debug;
       foreach my $tokinfo (@{ $rophash{refaddr $templ}->{tokinfos} }) {
         my $tokname = $tokinfo->{tokname} // oops;
-        my $old_info = $tokhash->{ _mk_tokhash_key($templ, $tokname) };
-        my $new_key = _mk_tokhash_key($new_rop, $tokname);
-        oops if exists $tokhash->{$new_key};
-        $tokhash->{$new_key} = {
-          # This will be used by the Hreplace callback to find the value
-          #rop          => $new_rop,
-          #tokname      => $tokname,
-          #cond_expr    => $old_info->{cond_expr}, # just for debugging??
-          content_list => [ $old_info->{content_list}->[$i] // [""] ],
-          #token        => $old_info->{token}, # just for debugging??
-        };
-btw dvis 'B B Created $new_key $tokhash->{$new_key}' if $debug;
+        my $info = $tokhash->{ _mk_tokhash_key($templ, $tokname) } // oops;
+        if ($new_rop) {
+          # clone the info data (for each tokname) to go with $new_rop
+          my $new_key = _mk_tokhash_key($new_rop, $tokname);
+          oops if exists $tokhash->{$new_key};
+          my $new_info = $tokhash->{$new_key} = {
+            # Supply "" for tokens with fewer values than the max in the rop
+            content_list => [ $info->{content_list}->[$i] // [""] ],
+            #rop          => $new_rop,
+            #cond_expr    => $info->{cond_expr}, # just for debugging??
+          };
+          foreach (qw/tokname token rmsb span/) {
+            $new_info->{$_} = $info->{$_} if exists $info->{$_};
+          }
+          $info = $new_info;
+btw dvis 'G G-1 $i $N Created $new_key $tokhash->{$new_key}\n $info' if $debug;
+        }
+        # Else: $new_rop is undef if the template itself is being used
+        $rop0 //= ($new_rop // $templ);
+        if (delete $info->{rmsb}) {
+          if ($N > 1) {
+            $info->{rmbb} = 1 if $i < $N-1; # remove bottom border
+            $info->{rmtb} = 1 if $i > 0;    # remove top border
+          }
+        }
+        delete $info->{span} if $i > 0;
       }
-btw dvis 'C C $i $new_rop' if $debug;
-    }
+btw dvis 'G G-2 $i $new_rop' if $debug;
+    }# foreach $i
     foreach my $rop (@group) {
-      btw ivis 'D D Deleting $rop' if $debug;
+      btw ivis 'G G-Delete unused $rop' if $debug;
       $rop->delete;
       ### FOR DEBUG (not necessary)
       foreach my $tokname(map{$_->{tokname}}
@@ -432,7 +579,7 @@ btw dvis 'C C $i $new_rop' if $debug;
         delete $tokhash->{$key};
       }
     }
-  }
+  }#_process_group()
 
   # Find groups of alternative conditional rops and expand/collapse each one
   my %seen;
@@ -442,28 +589,52 @@ btw dvis 'C C $i $new_rop' if $debug;
     my $rop = $ropinfo->{rop};
 
     my @group = ($rop);
+btw dvis 'FFF1 $rop %$ropinfo' if $debug;
     if ($ropinfo->{cond_expr}) {
       # Search preceding adjacents to find the first in the group
       my $elt = $rop;
       while ($elt = $elt->prev_sibling) {
         my $addr = refaddr $elt;
-        last unless defined(my $ropinfo = $rophash{$addr});
-        last if $seen{$addr}++;
-        push @group, $elt;
-        last if !defined $ropinfo->{cond_expr}; # stop *on* a non-conditional
+        my $ropinfoP = $rophash{$addr};
+        unless (defined $ropinfoP) {
+btw dvis 'FFF--Reject prev sib $elt -- not in rophash' if $debug;
+          last
+        }
+        if ($seen{$addr}++) {
+btw dvis 'FFF--Reject prev sib $elt -- already seen' if $debug;
+          last
+        }
+        push @group, $elt;  # accept this
+        if (! defined $ropinfoP->{cond_expr}) {
+btw dvis 'FFF--Accept prev sib $elt ; NOT CONDITIONAL' if $debug;
+          last # stop *on* a non-conditional
+        }
+btw dvis 'FFF--Accept prev sib $elt ($ropinfoP->{cond_expr})' if $debug;
       }
     }
+    @group = reverse @group; # move first rop to group[0]
     # Search following adjacents to find the last in the group
     my $elt = $rop;
     while ($elt = $elt->next_sibling) {
       my $addr = refaddr $elt;
-      last unless defined(my $ropinfo = $rophash{$addr});
-      last if !defined $ropinfo->{cond_expr}; # stop before a non-conditional
-      last if $seen{$addr}++;
+      my $ropinfoN = $rophash{$addr};
+      unless (defined $ropinfoN) {
+btw dvis 'FFF++Reject next sib $elt -- not in rophash' if $debug;
+        last
+      }
+      if (! defined $ropinfoN->{cond_expr}) {
+btw dvis 'FFF++Reject next sib $elt -- not conditional' if $debug;
+        last # stop *on* a non-conditional
+      }
+      if ($seen{$addr}++) {
+btw dvis 'FFF++Reject next sib $elt -- already seen' if $debug;
+        last
+      }
+btw dvis 'FFF++Accept next sib $elt ($ropinfoN->{cond_expr})' if $debug;
       push @group, $elt;
     }
-    # N.B. Each isolated non-conditional rop is a "group", which will be
-    # replicated if it contains multi-valued tokens
+    # N.B. An isolated non-conditional rop is its own "group",
+    # which will be replicated if it contains multi-valued tokens
 
     _process_group(@group);
   }
@@ -473,15 +644,18 @@ btw dvis 'C C $i $new_rop' if $debug;
   }
 }#rt_replicate
 
+sub _clean_rsids($) {
+  my $doc = shift;
+  $doc->Hclean_for_cloning(debug => 0);
+}
+
 sub replace_tokens($$@) {
   my ($context, $hash, %opts) = @_;
   local $debug = $debug || $opts{debug};
 oops unless blessed($context);
 
   unless (caller eq __PACKAGE__ or !$context->{parent}) {
-    my $doc = $context->document();
-    eval { $doc->Hclean_for_cloning() };
-    oops dvis '$context $context->{parent} $doc\n$@\n',fmt_tree($context, ancestors=>1) if $@;
+    _clean_rsids($context->document());
   }
 
 # 1. Do a "dry-run" (search-only) pass to locate all tokens
@@ -490,9 +664,9 @@ oops unless blessed($context);
 #    Conditional-instantiation :modifiers (only) are evaluated
 #    and the resulting cond_expr, if any, saved.
   my %tokhash;
+
   _rt_dryrun($context, $hash, \%tokhash);
-  btw dvis 'AFTER DRY-RUN: %tokhash' if $debug;
-  #btw(Data::Dumper->new([\%tokhash])->Indent(1)->Maxdepth(2)->Dump) if $debug;
+  btw 'AFTER DRY-RUN: ',_fmt_tokhash(\%tokhash) if $debug;
 
 # 2. Scan %tokhash to identify template groups (either a lone regular
 #    rop which contains multi-value tokens, or adjacent rops containing
@@ -505,7 +679,8 @@ oops unless blessed($context);
 #    Replace the list of all values with the one specific value in
 #    the %tokhash entry
   _rt_replicate($context, \%tokhash);
-btw dvis 'AFTER REPLICATE: %tokhash\ncontext=',fmt_tree($context) if $debug;
+  btw 'AFTER REPLICATE: ',_fmt_tokhash(\%tokhash),
+      "\n  context=", fmt_tree($context, wi => 2) if $debug;
 
 # 3. Do Hreplace.  In the callback:
 #      If rop is not in %tokinfo:
@@ -516,24 +691,30 @@ btw dvis 'AFTER REPLICATE: %tokhash\ncontext=',fmt_tree($context) if $debug;
 #
 #      Apply std_mods to the value
 #      return (Hr_SUBST, [content])
-  my %to_deletes;
-  my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes);
+  my (%to_deletes, %spandowns);
+  my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes, \%spandowns);
+  btw "AFTER SUBSTITUTIONS: context=", fmt_tree($context, wi => 2) if $debug;
 
-# 4. Modify table cells to implement ":spandown" or ":delinteriorborders"
-  #_fixup_tables(\%toklist);  # FIXME todo
-
-# 5. Delete elements which contained token(s) with :del* modifiers where
-#    all such tokens were replaced by ""
+# 4. Delete rops which contained token(s) with :del* modifiers where
+#    all such tokens were replaced by emptyness ("")
   foreach (values %to_deletes) {
     my ($to_delete, $elt) = @$_;
     if ($to_delete) {
       btw ivis 'DELETING due to :del* : $elt ',vis($elt->Hget_text) if $debug;
       $elt->delete;
+      # leave %to_deletes entry for span check below
     } else {
       btw ivis 'KEEPING $elt because some tokens are not empty' if $debug;
+      delete $to_deletes{$_};
     }
   }
 
+# 5. Span cells containing tokens with :span if cells below are empty
+  foreach (values %spandowns) {
+    my ($rop, $cell) = @$_;
+    next if exists $to_deletes{$rop}; # was deleted above
+    _do_span($cell);
+  }
   # ??? should replace count be reduced by the number of tokens in
   # objects removed via $to_delete ???
   return scalar(@rr)
@@ -551,18 +732,21 @@ sub new {
   my $class = shift;
   my ($context, $proto_tag, %opts) = @_;
 
-  $context->document->Hclean_for_cloning(); # remove 'rsid' styles
+  my $doc = $context->document;
+  ODF::MailMerge::_clean_rsids($doc);
 
-  my $m = $context->Hsearch($proto_tag)
+  my $m = $context->Hsearch($proto_tag, %opts)
            // croak ivis 'proto_tag $proto_tag not found';
 
   my $proto_table = $m->{segments}->[0]->get_parent_table
            // croak(ivis 'proto_tag $proto_tag is not in a Table');
 
-  $m->{para}->Hreplace($proto_tag, [""]); # [] ?
+  $m->{para}->Hreplace($proto_tag, [""], %opts); # [] ?
 
   bless {
-    proto_table => $proto_table
+    proto_table => $proto_table,
+    doc         => $doc,
+    prev        => undef,
   },$class
 }
 
@@ -572,9 +756,20 @@ sub add_record {
 
   my $proto_table = $self->{proto_table};
 
+  # Remove bottom border of previous clone to avoid doubled-up borders
+  if (my $prev_table = $self->{prev}) {
+    my ($numrows, $numcols) = $prev_table->get_size;
+    my $lastrow = $prev_table->get_row($numrows-1);
+    for my $cx (0..$numcols-1) {
+      my $cell = $lastrow->get_cell($cx);
+      ODF::MailMerge::_rm_cell_border($self->{doc}, $cell, "fo:border-bottom");
+    }
+  }
+
   my $table = $proto_table->clone;
   $table->set_name($proto_table->Hgen_table_name());
   $proto_table->insert_element($table, position => PREV_SIBLING);
+  $self->{prev} = $table;
 
   # Ordinarily replace_tokens() simply ignores {token}s which are
   # not being replaced.  However during Mail Merge every token should
@@ -594,6 +789,8 @@ sub add_record {
       croak "Unhandled token ", vis($token),
             ivis '; the callback in hash{$key} returned ($return_op,$val)\n'
         unless ($return_op & Hr_SUBST)==0 || defined $val;
+    } else {
+      croak "Unhandled token modifier ",visq($_) foreach @$custom_mods;
     }
     return ($return_op, ODF::MailMerge::_to_content_list($val))
   }
@@ -826,11 +1023,15 @@ The standard :modifiers are
 
   :breakmulti - Append newline if the value contains embedded newlines.
 
+  :span       - (only in a table cell) Span the cell down over cells below
+                which are empty. To be useful, the content should have
+                Format->align text->Center so it can float.
+
   :delrow, :delpara, :del=tag
               - Delete the containing row, paragraph, etc. if the
                 token value is empty or missing ("" or undef).
 
-  :rep_first, :rep_mid, :rep_last
+  :rep_first, :rep_notfirst :rep_mid, :rep_last
               - See below.  Used to provide multiple templates used
                 when replicating a row, paragraph, etc. to accomodate
                 a multi-valued token.
@@ -845,18 +1046,18 @@ empty I<even if other tokens have values in the deleted row>.
 
 =head2 Multi-value tokens
 
-If a token has multiple values, then by default the
-containing table row is replicated, or if the token is not in a table
-then the containing paragraph.
+If a token has multiple values, then the containing row or paragraph
+is replcated.   The row is replicated if the token is
+in a table (within the same I<section>, if relevant).
 
-A B<< :reptag=I<tag> >> modifier may be given if a larger construct
-(not just the containing row or paragraph) should be replicated.
-'tag' is an L<XML::Twig> search condition, usually an ODF tag name
-such as I<table:table>.  To see the tags in an existing document, run this:
+=for future Advanced: A B<< :reptag=I<tag> >> modifier may be given if a specific construct
+=for future (not the containing row etc.) should be replicated.
+=for future 'tag' is an L<XML::Twig> search condition, usually an ODF tag name
+=for future such as I<text:p> or I<table:table>.  To see the tags in an existing document, run this:
+=for future
+=for future   perl -MODF::lpOD -MODF::lpOD_Helper -E "say fmt_tree_brief odf_get_document(shift)->get_body;" "/path/to/file.odt"
 
-  perl -MODF::lpOD -MODF::lpOD_Helper -E "say fmt_tree_brief odf_get_document(shift)->get_body;" "/path/to/file.odt"
-
-Where the following documentation refers to replicating "rows" it means
+NOTE: Where the following documentation refers to replicating "rows" it means
 the appropriate ODF object type.
 
 B<Replicating rows with more than one token>

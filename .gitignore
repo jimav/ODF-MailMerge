@@ -30,6 +30,6 @@ cover_db/
 
 MYMETA.*
 
-/ODF-Edit-*
+/ODF-MailMerge-*
 
 .gitnxtver_cache
