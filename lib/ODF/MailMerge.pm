@@ -32,7 +32,7 @@ use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=M${lno}:' ;
 use Clone ();
 
 use ODF::lpOD;
-use ODF::lpOD_Helper 6.001 qw/:DEFAULT
+use ODF::lpOD_Helper 6.002 qw/:DEFAULT
                               PARA_FILTER
                               Hr_MASK
                               arraytostring hashtostring/;
@@ -925,7 +925,7 @@ which most of the time is not used.
 One or more fields may have *multiple* values.
 In that case
 I<part of the containing row, paragraph, etc. can be
-replicated to accomodate extra values for the same field.>
+replicated to accommodate extra values for the same field.>
 For example a personnel directory may allow each person
 to have any number of telephone numbers.
 
@@ -947,9 +947,8 @@ replaced by appropriate values from the "Name" and "Address" columns.
 =head2 $engine = ODF::MailMerge::Engine-E<gt>new($context, $proto_tag);
 
 Create a new mail-merge engine which will replicate the protototype
-object containing $proto_tag.  The proto object could be a I<table>
-(good for things like personnel-directory), a I<section> (might be
-used for form letters), or any other ODF text container.
+table containing $proto_tag.  Currently the proto object must be a I<table>
+but I<section>s and other ODF text wrappers may be supported later.
 
 I<$context> is usually the document body e.g. C<$doc-E<gt>get_body>.
 
@@ -1027,28 +1026,26 @@ The standard :modifiers are
                 which are empty. To be useful, the content should have
                 Format->align text->Center so it can float.
 
-  :delrow, :delpara, :del=tag
-              - Delete the containing row, paragraph, etc. if the
-                token value is empty or missing ("" or undef).
+  :delempty   - Delete the containing row, frame, or paragraph if the
+                token value is empty ("")
 
-  :rep_first, :rep_notfirst :rep_mid, :rep_last
-              - See below.  Used to provide multiple templates used
-                when replicating a row, paragraph, etc. to accomodate
-                a multi-valued token.
+  :rep_first, :rep_notfirst :rep_mid, :rep_last :rep=<formula>
+              - See below.  Allows advanced control when rows, etc.
+                are being replicated to accommodate a multi-valued token.
 
-=head2 Eliding Empty Lines (:delrow, etc.)
+=head2 Eliding Empty Lines (:delempty)
 
-These modifiers cause the containing row, paragraph, etc. to be deleted
-if the token value is "" or undef.
+This modifier deletes the containing row (frame, paragraph, etc.)
+if all tokens in the row with the :delemtpy modifier have an
+empty value ("").
 
-Note that the row, etc. is deleted if it's token's replacement value is
-empty I<even if other tokens have values in the deleted row>.
+Note that the row, etc. is deleted even if other tokens without :delempty
+exist in the row and have non-empty values.
 
 =head2 Multi-value tokens
 
-If a token has multiple values, then the containing row or paragraph
-is replcated.   The row is replicated if the token is
-in a table (within the same I<section>, if relevant).
+If a token has multiple values, then the containing row, frame or paragraph
+is replcated.
 
 =for future Advanced: A B<< :reptag=I<tag> >> modifier may be given if a specific construct
 =for future (not the containing row etc.) should be replicated.
@@ -1121,14 +1118,13 @@ in the result.  If there was only a single value for each token
 then the "main" template row would be used and the specialised
 templates ignored.
 
-===BEGIN EXPERIMENTAL, UNSUPPORTED FEATURE===
+B<:rep=EXPR> indicates the template row etc. should be used
+when the Perl EXPR is true.  EXPR may onle reference
+variables B<$i> (the replicate index, starging with 0)
+of B<$N> (the total number of replciates).  For example
+I<:rep=$i==1> is equivalent to I<:rep_first>.
 
-B<:rep=EXPR> indicates that the template row should be used when the Perl
-expression EXPR is true.  While EXPR is evaluated,
-B<$i> is the replicate index (first row is 0)
-and B<$N> is the total number of replicates.
-
-For example, the following five template rows could be used to
+The following five template rows could be used to
 eliminate interior borders like in the above example, but also
 alternate colors or other formatting of odd & even rows:
 
@@ -1148,33 +1144,23 @@ alternate colors or other formatting of odd & even rows:
   │ODD (last)     {Token Name:rep=$i == N && ($i % 2)==1}     │
   └───────────────────────────────────────────────────────────┘
 
-===END EXPERIMENTAL, UNSUPPORTED FEATURE===
-
 =head2 CALLBACKS
 
-If a hash value is a sub reference, the sub is called with
+If a hash value is a sub reference, the sub is called with args
 
-  ($token_name, \%params)
+  ($token_name, $token, $para, $custom_mods)
 
-I<$token_name> is the just the name "Foo" from "{Foo:modifiers...}".
+I<$token_name> is the just the name e.g. "foo" in "{foo:modifiers...}".
 
-I<\%params> contains additional parameters, including:
+I<$token> is the complete "{tokenname...}" string being replaced
 
-=over
+I<$para> is the paragraph containing the token.
 
-B<token =E<gt> "{token:modifiers}"> -- the complete token being processed
-
-B<< para =E<gt> <paragraph node> >> -- the paragraph containing the token
-
-B<custom_mods =E<gt> ["mod1", "mod2", ...]>
-
-This array contains unrecognized :modifier strings
+I<$custom_mods> is a ref to an array of unrecognized :modifier strings
 (excluding the ':') found in the token.  It is up to your code
 to do what it wants with them.
 Note: An exception occurs if unrecognized :modifiers are encountered
 when a callback is not being used.
-
-=back
 
 The callback's return values indicate whether and how to replace
 the token.  The protocol uses the Hr_* constants exported
@@ -1193,7 +1179,7 @@ The token is not replaced, but left as-is, and processing continues.
 This only makes sense if the token will somehow be processed later,
 for example via a separate call to C<replace_tokens>.
 
-FIXME: Define local MM_SUBST to avoid showing Hr_* dependencies?
+=for future FIXME: Define local MM_SUBST to avoid showing Hr_* dependencies?
 
 =head1 SEE ALSO
 
