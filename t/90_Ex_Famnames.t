@@ -24,6 +24,20 @@ BEGIN {
 }
 use ODF::MailMerge;
 
+############# Modules used by the Ex_Famnames.pl example,
+# repeated here so Dist::Zilla will make them dependencies
+#use FindBin ();
+use File::Basename ();
+use DateTime ();
+use DateTime::Format::Strptime ();
+use Getopt::Long ();
+use Spreadsheet::Edit ();
+use Data::Dumper::Interp 6.005 ();
+use ODF::lpOD ();
+use ODF::lpOD_Helper ();
+use ODF::MailMerge ();
+#############
+
 my $lopath = openlibreoffice_path();
 skip_all("LibreOffice is not avaialble") unless $lopath;
 note "Using ", $lopath;
