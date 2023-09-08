@@ -40,7 +40,10 @@ $dbpath //= "$Bin/family_names.csv";
 
 #---------------------------------------------------------------
 
-warn "> Reading $skelpath\n";
+############################
+# Load the 'skeleton' document
+############################
+warn "> Loading $skelpath\n";
 my $doc = odf_get_document($skelpath, read_only => 1) // die "$skelpath : $!";
 my $body = $doc->get_body;
 
@@ -50,7 +53,7 @@ my $body = $doc->get_body;
 warn "> Reading $dbpath\n";
 read_spreadsheet($dbpath);
 
-# Make aliases for uncertain column titles.
+# Make Spreadsheet::Edit aliases for uncertain column titles.
 # These identifiers are used instead of actual column titles in
 # {tokens} in the Skeleton document.
 #   Side note: 'alias' throws an error if a regex does not match anything
@@ -69,15 +72,6 @@ my $highest_Rank = 0;
 apply { $highest_Rank = $crow{Rank} if $crow{Rank} > $highest_Rank; };
 
 ########################################
-# Replace "{Database Date}" with the modification time of the data file
-########################################
-my $dbpath_mt_unixtime = (stat($dbpath))[9];
-my $dbpath_mt_dt = DateTime->from_epoch(epoch => $dbpath_mt_unixtime);
-my $dbpath_mt_string = $dbpath_mt_dt->strftime("%Y-%m-%d");
-replace_tokens($body, { "Database Date" => $dbpath_mt_string })
- == 1 or die "Did not find {Database Date}";
-
-########################################
 # Generate the table showing data alphabetized by Name
 ########################################
 sort_rows { $a->{Name} cmp $b->{Name} };
@@ -85,7 +79,7 @@ sort_rows { $a->{Name} cmp $b->{Name} };
 # Visit all the data rows and create an entry in the document for each
 { my $engine = ODF::MailMerge::Engine->new($body, "{ByName_Proto}");
   apply {
-    my $hash = {  # massage some of the data before displaying
+    my $hash = {  # massage the data before displaying
       Name       => $crow{Name},
       Rank       => $crow{Rank},
       Origin     => $crow{Origin},
@@ -119,8 +113,6 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
   { my $engine = ODF::MailMerge::Engine->new($body, "{ByOriginNonEng_Proto}");
     foreach my $origin (sort keys %Origin_to_Names) {
       my $namelist = $Origin_to_Names{$origin};
-  #use Data::Dumper::Interp; say dvis '## $origin\n   $namelist';
-  die "bug" if grep /\n/s, @$namelist;
       my $hash = {
         Origin => $origin,
         Names  => $namelist,
@@ -132,9 +124,21 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
 }
 
 ########################################
-# Generate the complete by-origin table.
-# The prototype encapsulates the {Name} tag in a frame
-# so the frame is replicated instead of the whole row.
+# Generate the complete by-origin table, generating a comma-separated
+# list of names for each origin.
+#
+# There are two {Name} tags with different conditionals, each in its own
+# frame; one conditional matches the the last item in the list, the other
+# matches all items before the last and includes a ", " after the token
+# in it's frame.  The result is like "name1, name2, ..., nameLast" when
+# the substituted values are strung together.
+#
+# When a multi-valued {token} is encapsulated in a frame, the frame is
+# replicated instead of a whole table row; this is what allows multiple
+# values to end up on the same line in the result (the frames are
+# anchored "as Character" in the same paragraph).
+#
+# See the Ex_Famnames_Skeleton.odt document for how this is set up.
 ########################################
 { my %Origin_to_Names;
   apply {
@@ -143,8 +147,6 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
   { my $engine = ODF::MailMerge::Engine->new($body, "{ByOrigin2_Proto}");
     foreach my $origin (sort keys %Origin_to_Names) {
       my $namelist = $Origin_to_Names{$origin};
-  #use Data::Dumper::Interp; say dvis '## $origin\n   $namelist';
-  die "bug" if grep /\n/s, @$namelist;
       my $hash = {
         Origin => $origin,
         Names  => $namelist,
@@ -154,6 +156,15 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
     $engine->finish();
   }
 }
+
+########################################
+# Replace "{Database Date}" with the modification time of the data file
+########################################
+my $dbpath_mt_unixtime = (stat($dbpath))[9];
+my $dbpath_mt_dt = DateTime->from_epoch(epoch => $dbpath_mt_unixtime);
+my $dbpath_mt_string = $dbpath_mt_dt->strftime("%Y-%m-%d");
+replace_tokens($body, { "Database Date" => $dbpath_mt_string })
+ == 1 or die "Did not find {Database Date}";
 
 ########################################
 # Write out the result

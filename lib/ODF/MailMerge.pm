@@ -49,8 +49,27 @@ use constant ROW_OR_BODYROOT_FILTER => "table:table-row|office:text";
 
 use Exporter 'import';
 our @EXPORT = qw/replace_tokens/;
+our @EXPORT_OK = qw/odfmm_example_path/;
+our %EXPORT_TAGS = ('all' => [@EXPORT, @EXPORT_OK]);
 
 our $debug;
+
+use File::ShareDir qw/dist_dir/; # module_dir
+use Path::Tiny qw/path/;
+sub odfmm_example_path() {
+  my $p = path(__FILE__)->parent->parent->parent->child('share','examples');
+  unless ($p->exists) {
+    $p = path(dist_dir('ODF-MailMerge'))->child('examples');
+  }
+  unless ($p->exists) {
+    die "Can not locate share/examples\ndied";
+  }
+  $p->canonpath
+}
+
+=for Pod::Coverage lpodh_example_path
+
+=cut
 
 # Recognize anything probably intended as a {token} expression
 our $token_re = qr/\{ (?<tokname> (?:[^:\{\}\\\n]+|\\[^\n])+    )
@@ -1180,6 +1199,16 @@ This only makes sense if the token will somehow be processed later,
 for example via a separate call to C<replace_tokens>.
 
 =for future FIXME: Define local MM_SUBST to avoid showing Hr_* dependencies?
+
+=head1 COMPLETE EXAMPLE
+
+A complete example application is included in
+the L<ODF::lpOD_Helper> distribution, usually installed at
+B<.../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/>.
+
+To display the path in your installation, run
+
+  perl -MODF::MailMerge=:all -wE 'say odfmm_example_path'
 
 =head1 SEE ALSO
 
