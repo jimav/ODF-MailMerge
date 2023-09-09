@@ -32,7 +32,7 @@ use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=M${lno}:' ;
 use Clone ();
 
 use ODF::lpOD;
-use ODF::lpOD_Helper 6.002 qw/:DEFAULT
+use ODF::lpOD_Helper 6.004 qw/:DEFAULT
                               PARA_FILTER
                               Hr_MASK
                               arraytostring hashtostring/;
@@ -67,7 +67,7 @@ sub odfmm_example_path() {
   $p->canonpath
 }
 
-=for Pod::Coverage lpodh_example_path
+=for Pod::Coverage odfmm_example_path
 
 =cut
 
