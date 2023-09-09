@@ -775,15 +775,22 @@ sub add_record {
 
   my $proto_table = $self->{proto_table};
 
-  # Remove bottom border of previous clone to avoid doubled-up borders
-  if (my $prev_table = $self->{prev}) {
-    my ($numrows, $numcols) = $prev_table->get_size;
-    my $lastrow = $prev_table->get_row($numrows-1);
-    for my $cx (0..$numcols-1) {
-      my $cell = $lastrow->get_cell($cx);
-      ODF::MailMerge::_rm_cell_border($self->{doc}, $cell, "fo:border-bottom");
-    }
-  }
+#  # NO. First of all, removing a border leaves border-less entries after
+#  # page breaks.  Also spanned cells show the border of the spanning cell,
+#  # so the (now commented-out) code would need to remove the spanning cell's
+#  # border in columns which ended with a span.
+#  #
+#  # See https://bugs.documentfoundation.org/show_bug.cgi?id=157127
+#  # The best advice currently is to use very-thin borders (or none at all) to
+#  # minimize the uglyness of doubled borders.
+#  if (my $prev_table = $self->{prev}) {
+#    my ($numrows, $numcols) = $prev_table->get_size;
+#    my $lastrow = $prev_table->get_row($numrows-1);
+#    for my $cx (0..$numcols-1) {
+#      my $cell = $lastrow->get_cell($cx);
+#      ODF::MailMerge::_rm_cell_border($self->{doc}, $cell, "fo:border-bottom");
+#    }
+#  }
 
   my $table = $proto_table->clone;
   $table->set_name($proto_table->Hgen_table_name());
@@ -809,8 +816,9 @@ sub add_record {
             ivis '; the callback in hash{$key} returned ($return_op,$val)\n'
         unless ($return_op & Hr_SUBST)==0 || defined $val;
     } else {
-      croak "Unhandled token modifier ",visq($_) foreach @$custom_mods;
+      croak "Unhandled token modifier ",visq(":$_") foreach @$custom_mods;
     }
+    # FIXME: Why is _to_content_list needed here?
     return ($return_op, ODF::MailMerge::_to_content_list($val))
   }
   ODF::MailMerge::replace_tokens($table, {'*' => \&wrapper_cb}, %opts);

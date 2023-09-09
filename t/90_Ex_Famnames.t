@@ -68,8 +68,12 @@ run_perlscript($scriptpath->canonpath,"-o",$odt_outpath->canonpath);
 }
 my $got_text = $txt_outpath->slurp_utf8;
 
+# Don't care about different wrapping
 #$got_text =~ s/\s+//sg;
 #$ref_text =~ s/\s+//sg;
+
+#$got_text =~ s/\n/ /sg;
+#$ref_text =~ s/\n/ /sg;
 
 # As of LO 24.2 Alpha (Sep 2023), there is a bug in the txt output filter
 # that omits text in the frame at the top "COMMON FAMILY NAMES...".
