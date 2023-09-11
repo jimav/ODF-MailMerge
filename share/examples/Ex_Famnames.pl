@@ -12,7 +12,7 @@ use Getopt::Long qw/GetOptions/;
 
 use Spreadsheet::Edit qw/read_spreadsheet alias apply sort_rows %crow/;
 use Data::Dumper::Interp 6.005 qw/dvis qsh qshlist/;
-Data::Dumper::Interp::addrvis_digits(5);
+Data::Dumper::Interp::addrvis_digits(5); # for Author's debugging :-)
 
 use ODF::lpOD;
 use ODF::lpOD_Helper;
@@ -48,17 +48,14 @@ my $doc = odf_get_document($skelpath, read_only => 1) // die "$skelpath : $!";
 my $body = $doc->get_body;
 
 ############################
-# get the data
+# Read the "data base" (just a .csv file)
 ############################
 warn "> Reading $dbpath\n";
 read_spreadsheet($dbpath);
 
-# Make Spreadsheet::Edit aliases for uncertain column titles.
-# These identifiers are used instead of actual column titles in
-# {tokens} in the Skeleton document.
-#   Side note: 'alias' throws an error if a regex does not match anything
-#   or matches more than one column; so we are guaranteed that all columns
-#   are correctly identified.
+# Make alias identifiers for column titles matched by regular expressions.
+# This is so we don't have to know the exact text of column titles here.
+# The alias names will be keys in the row hashes.  See Spreadsheet::Edit .
 alias Name => qr/name/i;
 alias Rank => qr/rank/i;
 alias Origin => qr/origin/i;
@@ -124,7 +121,7 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
 }
 
 ########################################
-# Generate the complete by-origin table, generating a comma-separated
+# Generate the complete by-origin table, using a comma-separated
 # list of names for each origin.
 #
 # There are two {Name} tags with different conditionals, each in its own

@@ -165,7 +165,7 @@ sub test_rt($$$;$) {
   my @texts = map{ "{$tokname${_}}" } @$mods;
   #my $desc = "{${tokname}".join("/", @$mods)."}";
   my $desc = join("/", @texts);
-  $desc .= " [$num_values vals]" if $num_values > 1;
+  $desc .= " [$num_values ".($num_values==1 ? "val]" : "values]");
   my @rops = map{ scalar append_para($frame, $_) } @texts;
   my $hash = {
     Abogon => "bogon-a",
@@ -194,7 +194,8 @@ sub test_rt($$$;$) {
 
 test_rt( "MyTok", [""], 1 ); # ($tokname, $mods, $num_values)
 test_rt( "MyTok", ["", ":rep_first", ":rep_last"], 1 );
-test_rt( "MyTok", [":rep_first", ":rep_last"], 1 );
+test_rt( "MyTok", [":rep_first", ":rep_last"], 2 );
+test_rt( "MyTok", [":rep_first", ":rep_last"], 1, qr/no.*match.*N==?1/i);
 
 test_rt( "MyTok", [""], 2 );
 test_rt( "MyTok", [""], 50 );

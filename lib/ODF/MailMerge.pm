@@ -228,14 +228,14 @@ sub _get_replicate_opts($) {
   foreach (@$std_mods) {
     my $cexpr;
     if (/^rep/) {
-      if    (/^rep_first$/)     { $cexpr = '$i==0' }
+      if    (/^rep_first$/)     { $cexpr = '$i==0 && $N > 1' }
       elsif (/^rep_notfirst$/)  { $cexpr = '$i>0' }
       elsif (/^rep_mid$/  )     { $cexpr = '$i>0 && $i<$N' }
       elsif (/^rep_even_mid$/)  { $cexpr = '$i>0 && $i<$N && int($i%2)==0' }
       elsif (/^rep_odd_mid$/)   { $cexpr = '$i>0 && $i<$N && int($i%2)==1' }
-      elsif (/^rep_last$/ )     { $cexpr = '$i==$N' }
-      elsif (/^rep_even_last$/) { $cexpr = '$i==$N && int($i%2)==0' }
-      elsif (/^rep_odd_last$/)  { $cexpr = '$i==$N && int($i%2)==1' }
+      elsif (/^rep_last$/ )     { $cexpr = '$i==$N-1 && $N > 1' }
+      elsif (/^rep_even_last$/) { $cexpr = '$i==$N-1 && int($i%2)==0 && $N > 1' }
+      elsif (/^rep_odd_last$/)  { $cexpr = '$i==$N-1 && int($i%2)==1 && $N > 1' }
       elsif (/^rep_only$/)      { $cexpr = '$N==1' }
       elsif (/^rep=(.*)$/ ) {
         croak "Unsafe/disallowed expression ",visq($1)," in ",visq($_)
@@ -528,9 +528,12 @@ btw dvis 'GGG $N @group' if $debug;
         croak "No conditionally-instantiatable $rop_name matches \$i=$i \$N=$N\n",
               "The tokens in the group of adjacent items are:\n   ",
               join("\n   ",
-                   map{ map{ $_->{token} } @{ $rophash{refaddr $_}->{tokinfos} } } @group
-                  ), "\n(the missing one might be separated from the group by something)\n"
-              ,"subtree_root:",fmt_tree_brief($subtree_root),"\n"
+                   map{
+                     map{ sprintf("%-25s --> %s", $_->{token},
+                                   ($_->{cond_expr}||"(not conditional)")) }
+                     @{ $rophash{refaddr $_}->{tokinfos} }
+                   } @group
+                  ), "\nsubtree_root:",fmt_tree_brief($subtree_root),"\n"
       }
       my $new_rop;
       if ($N == 1) {
@@ -911,6 +914,9 @@ it's Section, flowing into successive columns and new pages as needed.
 The prototype table's properties can be set to prevent breaking entries
 at column/page boundaries, and control borders, inter-entry spacing, etc.
 
+If a {token} is not all the same format, the substituted value
+will use the format of the first character (i.e. the C<{>).
+
 =head1 SIMPLE SUBSTITUTION
 
 =head2 $count = replace_tokens($context, $hash);
@@ -1015,7 +1021,7 @@ Literal : { or } characters must be backslashed i.e. \: \{  or \}.
 A B<hash value> may be:
 
   * "string"                      - a replacement value string
-  * [[Style info], "string", ...] - a styled replacement value
+  * [[Style info], "string", ...] - a Styled content value
   * [list of possibly-multiple replacement values]
   * CODE ref                      - a callback (see "CALLBACKS")
 
@@ -1026,7 +1032,7 @@ containing [style spec] sub-arrays and plain strings, where a [style spec]
 describes a local style to be applied to the immediately following text string.
 As used here, the first item I<must> be a [style spec] sub-array.
 
-For example B<[[color =E<gt> "red", "bold"], "John Brown"]> means substitute
+For example C<[[color =E<gt> "red", "bold"], "John Brown"]> means substitute
 "John Brown" in red, bold text, overriding the style of
 the {token}.  Multiple pairs describe adjacent but differently-styled segments.
 
@@ -1050,14 +1056,15 @@ The standard :modifiers are
   :breakmulti - Append newline if the value contains embedded newlines.
 
   :span       - (only in a table cell) Span the cell down over cells below
-                which are empty. To be useful, the content should have
+                which are empty. To be useful, the cell should have
                 Format->align text->Center so it can float.
 
-  :delempty   - Delete the containing row, frame, or paragraph if the
-                token value is empty ("")
+  :delempty   - Delete the containing row, frame, or paragraph if
+                token values with :delempty are empty ("")
 
-  :rep_first, :rep_notfirst :rep_mid, :rep_last :rep=<formula>
-              - See below.  Allows advanced control when rows, etc.
+  :rmsb       - Remove shared borders between replicated rows
+
+  :rep_first, etc.  - See below.  Allows advanced control when rows, etc.
                 are being replicated to accommodate a multi-valued token.
 
 =head2 Eliding Empty Lines (:delempty)
@@ -1066,7 +1073,7 @@ This modifier deletes the containing row (frame, paragraph, etc.)
 if all tokens in the row with the :delemtpy modifier have an
 empty value ("").
 
-Note that the row, etc. is deleted even if other tokens without :delempty
+Note that the row is deleted even if other tokens without :delempty
 exist in the row and have non-empty values.
 
 =head2 Multi-value tokens
@@ -1107,12 +1114,16 @@ the result would be four copies of the row, looking like this:
   │              │ (900) 888-7777 │                       │
   └──────────────┴────────────────┴───────────────────────┘
 
-Next we'll see how to improve this by by eliminating interior borders;
+A C<:rmsb> modifier causes shared borders between replicated rows to
+be eliminated in the current cell.
 
-Three additional template rows, which can have different formatting,
-may be provided which are used for the first, middle and last rows,
-as indicating by B<:rep_first>, B<:rep_mid> and B<:rep_last> modifiers
-coded in any token:
+In the example above, the same template row was instantiated for every
+replicate.
+Alternatively a set of template rows may be used where the appropriate
+template is instantiated in each position of the set (first, last, etc.).
+
+The following eliminates shared row borders similar to what
+C<:rmsb> would do, but using conditional templates:
 
   ┌──────────────┬────────────────┬───────────────────────┐
   │{Name}        │ {Phone}        │ {Email}               │
@@ -1126,9 +1137,9 @@ coded in any token:
   ╷              ╷                ╷                       ╷
   │{Name}        │ {Phone}        │ {Email:rep_last}      │
   └──────────────┴────────────────┴───────────────────────┘
+  (extra space between rows just for illustration)
 
-(The extra space between rows is just for illustration to show
-the absent horizontal borders).  The result after substitution:
+would produce
 
   ┌──────────────┬────────────────┬───────────────────────┐
   │John Hancock  │ (415) 555-1212 │ j.hancock@gmail.com   │
@@ -1137,39 +1148,51 @@ the absent horizontal borders).  The result after substitution:
   │              │ (900) 888-7777 │                       │
   └──────────────┴────────────────┴───────────────────────┘
 
-The specialzed template rows, if present, must immediately follow the
-"main" template row which has no :rep* modifiers.
+The B<:rep_first> modifier indicated that that template without bottom borders
+should be used for the first row in the replication set, etc.
+Conditional :rep* modifiers must be mutually exclusive.
 
-In this example the "main" template row is not used and is not instantiated
-in the result.  If there was only a single value for each token
-then the "main" template row would be used and the specialised
-templates ignored.
+The first template in a set may be a "regular" template row without
+conditions, as in the example above.  This is used only when none of the
+conditional templates apply.  In the above example that was never because
+the conditional templates coverd every situation; however the "regular"
+template would be used if there was only one "replicate", i.e. all {token}s
+had only a single value.
 
-B<:rep=EXPR> indicates the template row etc. should be used
-when the Perl EXPR is true.  EXPR may onle reference
-variables B<$i> (the replicate index, starging with 0)
-of B<$N> (the total number of replciates).  For example
-I<:rep=$i==1> is equivalent to I<:rep_first>.
+B<:rep=EXPR> is the most general form.  EXPR is a Perl expression using
+variables C<$i> and C<$N>, and which evaluates to
+true when the template should be instantiated.  C<$i> will hold the current
+replicate index (first is zero), and C<$N> holds the total number of
+rows in the replication set.
 
-The following five template rows could be used to
-eliminate interior borders like in the above example, but also
-alternate colors or other formatting of odd & even rows:
+  "Friendly" conditional     Equivalent
+       :rep_first              :rep= $i==0 && $N > 1
+       :rep_middle             :rep= $i > 0 && $i < $N-1
+       :rep_last               :rep= $i==$N-1 && $N > 1
+       :rep_only               :rep= $N==1
 
-  ┌───────────────────────────────────────────────────────────┐
-  │EVEN (first)   {Token Name:rep_first}                      │
-  ╵                                                           ╵
-  ╷                                                           ╷
-  │EVEN (middle)  {Token Name:rep=$i>0 && $i<$N && ($i%2)==0} │
-  ╵                                                           ╵
-  ╷                                                           ╷
-  │ODD (middle)   {Token Name:rep=$i>0 && $i<$N && ($i%2)==1} │
-  ╵                                                           ╵
-  ╷                                                           ╷
-  │EVEN (last)    {Token Name:rep=$i == N && ($i % 2)==0}     │
-  └───────────────────────────────────────────────────────────┘
-  ╷                                                           ╷
-  │ODD (last)     {Token Name:rep=$i == N && ($i % 2)==1}     │
-  └───────────────────────────────────────────────────────────┘
+The above example is not very compelling because the C<:rmsb> modifier provides
+built-in support for removing shared borders.
+
+The following allows odd & even rows to have distinctive formatting
+(e.g. different background colors).  The first row is always "even"
+but odd & even alternatives are given for middle and last rows:
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │EVEN (first)   {Token Name:rep_first}                        │
+  ╵                                                             ╵
+  ╷                                                             ╷
+  │EVEN (middle)  {Token Name:rep=$i>0 && $i<$N-1 && ($i%2)==0} │
+  ╵                                                             ╵
+  ╷                                                             ╷
+  │ODD (middle)   {Token Name:rep=$i>0 && $i<$N-1 && ($i%2)==1} │
+  ╵                                                             ╵
+  ╷                                                             ╷
+  │EVEN (last)    {Token Name:rep=$i == $N-1 && ($i % 2)==0}    │
+  └─────────────────────────────────────────────────────────────┘
+  ╷                                                             ╷
+  │ODD (last)     {Token Name:rep=$i == $N-1 && ($i % 2)==1}    │
+  └─────────────────────────────────────────────────────────────┘
 
 =head2 CALLBACKS
 
@@ -1210,17 +1233,19 @@ for example via a separate call to C<replace_tokens>.
 
 =head1 COMPLETE EXAMPLE
 
-A complete example application is included in
-the L<ODF::lpOD_Helper> distribution, usually installed at
-B<.../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/>.
+A complete example application is included in the distribution.
+To display the path on your system, run
 
-To display the path in your installation, run
+  perl -MODF::MailMerge=:all -C -E 'say odfmm_example_path'
 
-  perl -MODF::MailMerge=:all -wE 'say odfmm_example_path'
+(something
+like C<.../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/>)
 
 =head1 SEE ALSO
 
-L<ODF::lpOD_Helper>, L<Sreadsheet::Edit>
+L<ODF::lpOD_Helper>
+
+L<Sreadsheet::Edit>
 
 =for comment The command-line tool B<ODFedit> provides access to some
 =for comment features of ODF::MailMerge without writing Perl code.
