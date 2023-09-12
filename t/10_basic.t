@@ -60,13 +60,13 @@ for my $bad_tokname ("A\tB", "a\nb", "A:\nfoo") {
   }
 }
 { my ($tokname, $std_mods, $custom_mods) = ODF::MailMerge::_parse_token(
-     "{Foo:nb:AA=a1\na2 :BB:unfold:breakmulti:delempty:delrow:delpara"
+     "{Foo:nb:AA=a1\na2 :BB:unfold:breakmulti:die:delrow:delpara"
     .":del=MY DELTAG"
     .":rep_first:rep_mid:rep_last:rep=MYEXPR:CC:reptag=MYREPTAG}" );
 
   fail() unless $tokname eq "Foo";
   is($custom_mods, ["AA=a1\na2 ", "BB", "CC"], "Custom mods separated");
-  is($std_mods, [qw/nb unfold breakmulti delempty delrow delpara/,
+  is($std_mods, [qw/nb unfold breakmulti die delrow delpara/,
                  "del=MY DELTAG",
                  qw/rep_first rep_mid rep_last rep=MYEXPR reptag=MYREPTAG/],
      "Standard :modifier recognition"
@@ -100,11 +100,11 @@ my $body = $doc->get_body;
 
   # Note: Wildcard '*' hash entries are tested with Mail Merge
   my %hash = (
-    "Address2" => "MULTI\nLINE", # token has ":unfold:delempty"
+    "Address2" => "MULTI\nLINE", # token has ":unfold:die"
     "CITY" => "Lake Placid",     # token has ":suf=,:nb"
     "FIRST NAME" => "John",      # token has ":nb:pfx=, "
     "LAST NAME"  => "{Brown}",
-    "ZIP" => "",                 # token has ":delempty,"
+    "ZIP" => "",                 # token has ":die,"
     "Non-existent Token Name" => "Should not be found",
     # N.B. "STATE" is not specified, so should not be replaced
   );
@@ -119,7 +119,7 @@ my $body = $doc->get_body;
 }
 
 #####################
-# :delempty test
+# :die test
 #####################
 {
   my $table2 = $body->Hsearch("{Table2ProtoTag}")->{para}->get_parent_table;
@@ -135,7 +135,7 @@ my $body = $doc->get_body;
   is ($subst_count, 6, "table2 replace_tokens return count");
   my $text2 = $table2->Hget_text;
   like($text2, qr/^Brown, John.*\{Address1.*\}\{Table2ProtoTag\}$/,
-       ":delempty test", fmt_tree($table2));
+       ":die test", fmt_tree($table2));
 }
 
 { # Callback with custom modifier
@@ -192,7 +192,10 @@ sub test_rt($$$;$) {
   }
 }
 
-test_rt( "MyTok", [""], 1 ); # ($tokname, $mods, $num_values)
+test_rt( "MyTok", [""], 1 ); # ($tokname, $mods, $num_values, $exception_re)
+test_rt( "MyTok", [":bogus"], 1, qr/invalid.*mod.*:bogus/i );
+test_rt( "MyTok", [":die"], 1 );
+test_rt( "MyTok", [":die:"], 1, qr/':'.*:die:/); # extraneous ':'
 test_rt( "MyTok", ["", ":rep_first", ":rep_last"], 1 );
 test_rt( "MyTok", [":rep_first", ":rep_last"], 2 );
 test_rt( "MyTok", [":rep_first", ":rep_last"], 1, qr/no.*match.*N==?1/i);
@@ -271,8 +274,8 @@ test_multi(["AAA {TokA} {TokB} BBB",
                 "A1 B1", "A2 B2", "A3 B3", " B4",
            ));
 
-test_multi(["XXX[{TokA} {TokB:delempty}]",
-            "YYY[{TokA:delempty} {TokB:delempty} {TokC}]",
+test_multi(["XXX[{TokA} {TokB:die}]",
+            "YYY[{TokA:die} {TokB:die} {TokC}]",
             "ZZZ[{TokA} {TokB} {TokC}]",
            ],
            { TokA => ["A1".."A3"],
@@ -292,28 +295,28 @@ test_multi(["XXX[{TokA} {TokB:delempty}]",
                  "ZZZ[A3  ]",
                 ),
            ),
-           ":delempty"
+           ":die"
 );
 
-test_multi(["XXX[{TokA:delempty} {TokB:delempty}]",
+test_multi(["XXX[{TokA:die} {TokB:die}]",
            ],
            {
              TokA => "aaa",
              TokB => "",
            },
-           "XXX[aaa ]", # not deleted because TokA is :delempty but isn't empty
-           ":delempty#2"
+           "XXX[aaa ]", # not deleted because TokA is :die but isn't empty
+           ":die#2"
 );
-test_multi(["XXX[{TokA:delempty} {TokB:delempty}]",
-            "YYY[{TokA:delempty} {TokB:delempty} {TokC}]",
+test_multi(["XXX[{TokA:die} {TokB:die}]",
+            "YYY[{TokA:die} {TokB:die} {TokC}]",
            ],
            {
              TokA => "",
              TokB => "",
              TokC => "ccc",
            },
-           "", # all deleted because all tokens with :delempty are empty
-           ":delempty-all-deleted"
+           "", # all deleted because all tokens with :die are empty
+           ":die-all-deleted"
 );
 
 ###########################

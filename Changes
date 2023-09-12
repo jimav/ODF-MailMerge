@@ -1,3 +1,4 @@
+0.004 - :die is shorthand for :delempty (the latter is now sort-of deprecated)
 0.003 - Corrected :rep_first/middle/last to apply only when $N > 1
         (i.e. only if the row is being replicated).  Preened docs.
 0.002 - Improved example; added function to get path to example dir

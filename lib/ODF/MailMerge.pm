@@ -73,7 +73,7 @@ sub odfmm_example_path() {
 
 # Recognize anything probably intended as a {token} expression
 our $token_re = qr/\{ (?<tokname> (?:[^:\{\}\\\n]+|\\[^\n])+    )
-                      (?<mods>    (?: : (?:[^:\{\}\\]+|\\.)+ )* )
+                      (?<mods>    (?: : (?:[^:\{\}\\]+|\\.)* )* )
                    \}/xs;
 
 sub _parse_token($) {
@@ -89,7 +89,8 @@ sub _parse_token($) {
 
   # Split :mod1:mod2:... discarding the initial :s
   my @mods;
-  while ($mods =~ /\G:((?:[^:\\]+|\\.)+)/gsc) {
+  while ($mods =~ /\G:((?:[^:\\]+|\\.)*)/gsc) {
+    croak "Extraneous ':' in ",vis($t) if $1 eq ""; # empty tokname
     push @mods, $1;
   }
   oops vis(pos($mods)) unless !defined(pos($mods)) || pos($mods)==length($mods);
@@ -102,8 +103,9 @@ sub _parse_token($) {
             " -- newline or tab is allowed only in :modifier after '='"
         if substr($_,0,$equal_ix) =~ /[\t\n]/;
     }
+btw visq($_) if $debug;
     if (/^(?: nb|unfold|breakmulti
-             |del(?:empty|row|para|=.*)
+             |die|del(?:empty|row|para|=.*)
              |rep(?:_first|_notfirst|_mid|_last|=.*)
              |rmsb  # remove shared border between replicates
              |span  # span down through empty cells below
@@ -430,9 +432,10 @@ btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' i
         }
       }
       elsif (/^rep/)       { } # handled in 1st pass
-      elsif (/^del/) {
+      elsif ($_ eq "die" || /^del/) {
         my $elt =
-          $_ eq "delempty" ? $rop :
+          $_ eq "die"      ? $rop :
+          $_ eq "delempty" ? $rop : # semi-deprecated
           $_ eq "delrow"   ? $m->{para}->Hself_or_parent(ROW_FILTER)  :
           $_ eq "delpara"  ? $m->{para}->Hself_or_parent(PARA_FILTER) :
           /^del=(.+)$/     ? $m->{para}->Hself_or_parent($1)        :
@@ -1059,21 +1062,21 @@ The standard :modifiers are
                 which are empty. To be useful, the cell should have
                 Format->align text->Center so it can float.
 
-  :delempty   - Delete the containing row, frame, or paragraph if
-                token values with :delempty are empty ("")
+  :die        - Delete the containing row, frame, or paragraph if
+                all tokens with :die are empty ("") after substitution.
 
   :rmsb       - Remove shared borders between replicated rows
 
   :rep_first, etc.  - See below.  Allows advanced control when rows, etc.
                 are being replicated to accommodate a multi-valued token.
 
-=head2 Eliding Empty Lines (:delempty)
+=head2 Eliding Empty Lines (:die)
 
 This modifier deletes the containing row (frame, paragraph, etc.)
-if all tokens in the row with the :delemtpy modifier have an
+if all tokens in the row with the :die modifier have an
 empty value ("").
 
-Note that the row is deleted even if other tokens without :delempty
+Note that the row is deleted even if other tokens without :die
 exist in the row and have non-empty values.
 
 =head2 Multi-value tokens
