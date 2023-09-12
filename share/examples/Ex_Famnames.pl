@@ -16,7 +16,7 @@ Data::Dumper::Interp::addrvis_digits(5); # for Author's debugging :-)
 
 use ODF::lpOD;
 use ODF::lpOD_Helper;
-use ODF::MailMerge qw/replace_tokens/;
+use ODF::MailMerge 1.000 qw/replace_tokens/;
 
 sub commify_number($) {
   scalar reverse (reverse($_[0]) =~ s/(\d\d\d)(?=\d)(?!\d*\.)/$1,/gr)
@@ -74,7 +74,8 @@ apply { $highest_Rank = $crow{Rank} if $crow{Rank} > $highest_Rank; };
 sort_rows { $a->{Name} cmp $b->{Name} };
 
 # Visit all the data rows and create an entry in the document for each
-{ my $engine = ODF::MailMerge::Engine->new($body, "{ByName_Proto}");
+{ my $engine = ODF::MailMerge::Engine->new(
+                        context => $body, proto_tag => "{ByName_Proto}");
   apply {
     my $hash = {  # massage the data before displaying
       Name       => $crow{Name},
@@ -91,7 +92,8 @@ sort_rows { $a->{Name} cmp $b->{Name} };
 # Generate the by-popularity table
 ########################################
 sort_rows { $a->{Rank} <=> $b->{Rank} };
-{ my $engine = ODF::MailMerge::Engine->new($body, "{ByPop_Proto}");
+{ my $engine = ODF::MailMerge::Engine->new(
+                        context => $body, proto_tag => "{ByPop_Proto}");
   apply {
     $engine->add_record(\%crow);
   };
@@ -107,7 +109,8 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
     push @{ $Origin_to_Names{$crow{Origin}} }, $crow{Name}
       if $crow{Origin} !~ /English/;
   };
-  { my $engine = ODF::MailMerge::Engine->new($body, "{ByOriginNonEng_Proto}");
+  { my $engine = ODF::MailMerge::Engine->new(
+                context => $body, proto_tag => "{ByOriginNonEng_Proto}");
     foreach my $origin (sort keys %Origin_to_Names) {
       my $namelist = $Origin_to_Names{$origin};
       my $hash = {
@@ -141,7 +144,8 @@ sort_rows { $a->{Rank} <=> $b->{Rank} };
   apply {
     push @{ $Origin_to_Names{$crow{Origin}} }, $crow{Name};
   };
-  { my $engine = ODF::MailMerge::Engine->new($body, "{ByOrigin2_Proto}");
+  { my $engine = ODF::MailMerge::Engine->new(
+                        context => $body, proto_tag => "{ByOrigin2_Proto}");
     foreach my $origin (sort keys %Origin_to_Names) {
       my $namelist = $Origin_to_Names{$origin};
       my $hash = {

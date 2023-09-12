@@ -17,7 +17,7 @@ use ODF::lpOD_Helper qw/:DEFAULT
 BEGIN {
   *_abbrev_addrvis = \&ODF::lpOD_Helper::_abbrev_addrvis;
 }
-use ODF::MailMerge;
+use ODF::MailMerge 1.000;
 
 # Get the text, inserting a specified marker after each paragraph
 our $dbpfx = "[0] ";
@@ -75,8 +75,8 @@ if ($debug) {
 
   say "\nB Hget_text:", vis($body->Hget_text()) if $debug;
 
-  my $engine = ODF::MailMerge::Engine->new($body, '{PROTO-TAG}',
-                                           debug => $debug);
+  my $engine = ODF::MailMerge::Engine->new(
+             context => $body, proto_tag => '{PROTO-TAG}', debug => $debug);
 
   #read_spreadsheet "$Bin/../tlib/Addrlist.csv";
   #apply {
@@ -111,8 +111,8 @@ if ($debug) {
   my $before_text = $body->Hget_text();
   #say dvis '$before_text' if $debug;
 
-  my $engine = ODF::MailMerge::Engine->new($body, '{PROTO-TAG}',
-                                           debug => $debug);
+  my $engine = ODF::MailMerge::Engine->new(
+     context => $body, proto_tag => '{PROTO-TAG}', debug => $debug);
 
   read_spreadsheet "$Bin/../tlib/Addrlist1.csv";
   apply {
@@ -152,8 +152,8 @@ if ($debug) {
   my $before_text = $body->Hget_text();
   #say dvis '$before_text' if $debug;
 
-  my $engine = ODF::MailMerge::Engine->new($body, '{PROTO-TAG}',
-                                           debug => $debug);
+  my $engine = ODF::MailMerge::Engine->new(
+         context => $body, proto_tag => '{PROTO-TAG}', debug => $debug);
 
   read_spreadsheet "$Bin/../tlib/Addrlist.csv";
   apply {
@@ -183,8 +183,8 @@ if ($debug) {
   my $doc = odf_get_document($input_path, read_only => 1);
   my $body = $doc->get_body;
 
-  my $engine = ODF::MailMerge::Engine->new($body, '{PROTO-TAG}',
-                                           debug => $debug);
+  my $engine = ODF::MailMerge::Engine->new(
+         context => $body, proto_tag => '{PROTO-TAG}', debug => $debug);
 
   my %wildcard_got;
   my %hash1 = (

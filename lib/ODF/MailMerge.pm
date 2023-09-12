@@ -41,11 +41,14 @@ use constant ROW_FILTER => "table:table-row";
 use constant CELL_FILTER => "table:table-cell";
 use constant FRAME_FILTER => "draw:frame";
 use constant SECTION_FILTER => "text:section";
-use constant ROW_OR_SECTION_FILTER => Hor_cond(ROW_FILTER, SECTION_FILTER);
-use constant FRAME_OR_SECTION_OR_ROW => Hor_cond(ROW_FILTER, FRAME_FILTER, SECTION_FILTER);
-use constant FRAME_OR_SECTION_FILTER => Hor_cond(FRAME_FILTER, SECTION_FILTER);
-use constant ROW_OR_PARA_FILTER => Hor_cond(PARA_FILTER, ROW_FILTER);
-use constant ROW_OR_BODYROOT_FILTER => "table:table-row|office:text";
+use constant TABLE_FILTER => "table:table";
+use constant ROW_SECTION_FILTER => Hor_cond(ROW_FILTER, SECTION_FILTER);
+use constant TABLE_SECTIOIN_ROW_FILTER => Hor_cond(ROW_FILTER, FRAME_FILTER, SECTION_FILTER);
+use constant FRAME_SECTION_FILTER => Hor_cond(FRAME_FILTER, SECTION_FILTER);
+use constant ROW_PARA_FILTER => Hor_cond(PARA_FILTER, ROW_FILTER);
+use constant ROW_BODYROOT_FILTER => "table:table-row|office:text";
+use constant TABLE_SECTION_FRAME_FILTER =>
+                   Hor_cond(TABLE_FILTER,SECTION_FILTER,FRAME_FILTER);
 
 use Exporter 'import';
 our @EXPORT = qw/replace_tokens/;
@@ -167,11 +170,11 @@ sub _para_to_rop($) {
   # If none of the above, then the containing paragraph is replicated.
   #
   if (my $frame = $elt->Hself_or_parent(FRAME_FILTER, CELL_FILTER)) {
-    if ($frame->Hself_or_parent(CELL_FILTER, FRAME_OR_SECTION_FILTER)) {
+    if ($frame->Hself_or_parent(CELL_FILTER, FRAME_SECTION_FILTER)) {
       return wantarray ? ($frame, "frame") : $frame
     }
   }
-  if (my $row = $elt->Hself_or_parent(ROW_FILTER, FRAME_OR_SECTION_FILTER)) {
+  if (my $row = $elt->Hself_or_parent(ROW_FILTER, FRAME_SECTION_FILTER)) {
     return wantarray ? ($row, "row") : $row
   }
   my $para = $elt->Hself_or_parent(PARA_FILTER, SECTION_FILTER) // oops;
@@ -669,18 +672,13 @@ btw dvis 'FFF++Accept next sib $elt ($ropinfoN->{cond_expr})' if $debug;
   }
 }#rt_replicate
 
-sub _clean_rsids($) {
-  my $doc = shift;
-  $doc->Hclean_for_cloning(debug => 0);
-}
-
 sub replace_tokens($$@) {
   my ($context, $hash, %opts) = @_;
   local $debug = $debug || $opts{debug};
 oops unless blessed($context);
 
-  unless (caller eq __PACKAGE__ or !$context->{parent}) {
-    _clean_rsids($context->document());
+  unless (caller eq 'ODF::MailMerge::Engine' or !$context->{parent}) {
+    $context->document->Hclean_for_cloning(debug => $opts{debug});
   }
 
 # 1. Do a "dry-run" (search-only) pass to locate all tokens
@@ -747,6 +745,9 @@ oops unless blessed($context);
 
 package ODF::MailMerge::Engine;
 
+use constant TABLE_SECTION_FRAME_FILTER => ODF::MailMerge::TABLE_SECTION_FRAME_FILTER;
+use constant TABLE_FILTER => ODF::MailMerge::TABLE_FILTER;
+
 use ODF::lpOD;
 use ODF::lpOD_Helper;
 use Data::Dumper::Interp;
@@ -755,23 +756,37 @@ our @CARP_NOT = ("ODF::MailMerge", "ODF::lpOD_Helper", "ODF::lpOD");
 
 sub new {
   my $class = shift;
-  my ($context, $proto_tag, %opts) = @_;
+  my %opts = @_;
 
-  my $doc = $context->document;
-  ODF::MailMerge::_clean_rsids($doc);
+  my $proto_elt = delete($opts{proto_elt});
+  if ($proto_elt) {
+    croak "proto_elt must be an element ref, not ",vis($proto_elt)
+      unless ref $proto_elt;
+  } else {
+    my $proto_tag = delete($opts{proto_tag})
+      // croak "Neither proto_tag or proto_elt was specified";
+    my $context = delete($opts{context}) // croak "Missing context";
+    my $r = $context->Hreplace($proto_tag, [""], %opts)
+      // croak ivis 'proto_tag $proto_tag not found';
+    $proto_elt = $r->{para}->parent(TABLE_SECTION_FRAME_FILTER)
+      // croak ivis 'proto_tag $proto_tag is not located in a proto container';
+  }
+  foreach (keys %opts) {
+    next if /^debug$/;
+    croak "Unhandled option ",vis($_);
+  }
 
-  my $m = $context->Hsearch($proto_tag, %opts)
-           // croak ivis 'proto_tag $proto_tag not found';
-
-  my $proto_table = $m->{segments}->[0]->get_parent_table
-           // croak(ivis 'proto_tag $proto_tag is not in a Table');
-
-  $m->{para}->Hreplace($proto_tag, [""], %opts); # [] ?
+  unless ($proto_elt->passes(TABLE_FILTER)) {
+    my $tag = u( eval{ $proto_elt->tag } );
+    croak ivis 'Tables are the only supported prototype element (not $tag)'
+  }
+  my $doc = $proto_elt->document;
+  $doc->Hclean_for_cloning(debug => $opts{debug});
 
   bless {
-    proto_table => $proto_table,
+    proto_table => $proto_elt,
     doc         => $doc,
-    prev        => undef,
+    #prev        => undef,
   },$class
 }
 
@@ -781,14 +796,15 @@ sub add_record {
 
   my $proto_table = $self->{proto_table};
 
-#  # NO. First of all, removing a border leaves border-less entries after
-#  # page breaks.  Also spanned cells show the border of the spanning cell,
-#  # so the (now commented-out) code would need to remove the spanning cell's
-#  # border in columns which ended with a span.
+#  # NO. First of all, removing bottom borders leaves border-less entries at
+#  # the bottom of pages before page breaks.  Also spanned cells show the
+#  # border of the spanning cell, so the (now commented-out) code would need
+#  # to remove the spanning cell's border in columns which ended with a span.
 #  #
 #  # See https://bugs.documentfoundation.org/show_bug.cgi?id=157127
 #  # The best advice currently is to use very-thin borders (or none at all) to
 #  # minimize the uglyness of doubled borders.
+#  #
 #  if (my $prev_table = $self->{prev}) {
 #    my ($numrows, $numcols) = $prev_table->get_size;
 #    my $lastrow = $prev_table->get_row($numrows-1);
@@ -801,7 +817,7 @@ sub add_record {
   my $table = $proto_table->clone;
   $table->set_name($proto_table->Hgen_table_name());
   $proto_table->insert_element($table, position => PREV_SIBLING);
-  $self->{prev} = $table;
+  #$self->{prev} = $table;
 
   # Ordinarily replace_tokens() simply ignores {token}s which are
   # not being replaced.  However during Mail Merge every token should
@@ -872,7 +888,7 @@ ODF::MailMerge - "Mail Merge" or just substitute tokens in ODF documents
  #   2. Replace tokens in that table using data from a spreadsheet,
  #      replicating the table as many times as necessary for all rows.
  #
- my $engine = ODF::MailMerge::Engine->new($body, "{mmproto}");
+ my $engine = ODF::MailMerge::Engine->new(context => $body, proto_tag => "{mmproto}");
 
  use Spreadsheet::Edit qw/read_spreadsheet apply %crow/;
  read_spreadsheet "/path/to/data.xlsx!Sheet1";
@@ -936,42 +952,39 @@ the hash contains a '*' wildcard entry.
 
 =head1 MAIL MERGE OVERVIEW
 
-The essential "mail merge" capabilities are:
-
 =over
 
 =item 1.
 
 A template of some kind specifies how to display data from
-one database record, with db field references where field values
+one database record, with db field references where values
 should be plugged in.  That template is copied as many times as there are
-database records, plugging in specific values for the field references.
+database records, plugging in specific values from each reacord.
 
 =item 2.
 
-One or more fields may have *no* value in a particular record,
-in which case
-I<the containing row, paragraph etc.can be deleted>
-to avoid leaving undesirable blank space.
-For example a mailing list may allow a secondary addressee line
-which most of the time is not used.
+Some fields may have empty ("") values in a particular record,
+in which case the containing row, paragraph etc.
+can be I<deleted to avoid leaving undesirable blank space>.
+For example a mailing list may allow for a secondary addressee line
+which is not always needed.
 
 =item 3.
 
-One or more fields may have *multiple* values.
+Fields may have *multiple* values.
 In that case
-I<part of the containing row, paragraph, etc. can be
+I<the containing row, paragraph, or frame can be
 replicated to accommodate extra values for the same field.>
 For example a personnel directory may allow each person
-to have any number of telephone numbers.
+to have several telephone numbers.
 
 =back
 
 =head1 MAIL MERGE API
 
-ODF::MailMerge does not care where the data comes from, as long as you
-can provide a hash table which maps token names to values for a particular
-record.
+It does not matter where the data comes from,
+as long as you can provide a hash table which maps token names
+to values for a particular record.
 
 The example in the SYNOPSIS reads a spreadsheet using L<Spreadsheet::Edit>,
 which provides just such a hash via the tied variable "%crow" (current row);
@@ -980,17 +993,21 @@ row being visited by 'apply'.
 Therefore tokens {Name} and {Address} would be
 replaced by appropriate values from the "Name" and "Address" columns.
 
-=head2 $engine = ODF::MailMerge::Engine-E<gt>new($context, $proto_tag);
+=head2 $engine = ODF::MailMerge::Engine-E<gt>new(context => $context, proto_tag => "{tag}");
 
-Create a new mail-merge engine which will replicate the protototype
-table containing $proto_tag.  Currently the proto object must be a I<table>
+=head2 $engine = ODF::MailMerge::Engine-E<gt>new(proto_elt => $elt);
+
+Create a new mail-merge engine which will replicate the indicated protototype
+element.
+Currently only I<table> prototypes are supported, but
 but I<section>s and other ODF text wrappers may be supported later.
 
-I<$context> is usually the document body e.g. C<$doc-E<gt>get_body>.
+In the first form, the string "{tag}" is searched for within C<$context>
+(e.g. the document body), and the containing Table is used as the prototype
+element.  The tag string may be contained anywhere in the table, and will
+be deleted (so it has no effect on the final result).
 
-I<$proto_tag> is a tag used to locate the prototype object within $context.
-The tag may appear anywhere within the object and will be deleted
-(and so has no effect on the final result).
+In the second form, the prototype node is specified directly.
 
 =head2 B<$engine-E<gt>add_record($hashref);>
 
