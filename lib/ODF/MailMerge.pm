@@ -34,8 +34,12 @@ use Clone ();
 use ODF::lpOD;
 use ODF::lpOD_Helper 6.004 qw/:DEFAULT
                               PARA_FILTER
+                              Hr_SUBST
                               Hr_MASK
                               arraytostring hashtostring/;
+
+#use constant MM_SUBST => Hr_SUBST;
+use constant MM_SUBST => 0x42FF;
 
 use constant ROW_FILTER => "table:table-row";
 use constant CELL_FILTER => "table:table-cell";
@@ -51,8 +55,8 @@ use constant TABLE_SECTION_FRAME_FILTER =>
                    Hor_cond(TABLE_FILTER,SECTION_FILTER,FRAME_FILTER);
 
 use Exporter 'import';
-our @EXPORT = qw/replace_tokens/;
-our @EXPORT_OK = qw/odfmm_example_path/;
+our @EXPORT = qw/replace_tokens MM_SUBST/;
+our @EXPORT_OK = qw/odfmm_example_path $token_re/;
 our %EXPORT_TAGS = ('all' => [@EXPORT, @EXPORT_OK]);
 
 our $debug;
@@ -202,8 +206,8 @@ sub _fmt_tokhash($) {
 # of the same tokname in a single paragraph) the 2nd pass has to re-process
 # a token from scratch.
 #
-# Returns () if the token should not be replaced, otherwise man details
-# including a (ref to) array of [content] specs.
+# Returns () if the token should not be replaced, otherwise $content_list
+#   ($content_list is a (ref to) array of [content] specs)
 sub _get_content_list($$$$) {
   my ($m, $tokname, $users_hash, $custom_mods) = @_;
   my $val = $users_hash->{$tokname} // $users_hash->{'*'};
@@ -213,9 +217,9 @@ sub _get_content_list($$$$) {
   if (ref($val) eq "CODE") {
     my $para  = $m->{para};
     (my $return_op, $val) = $val->($tokname, $token, $para, $custom_mods);
-    croak("callback returned Hr_SUBST without a value or vice-versa: $token")
-      if !defined($val) ^ !($return_op & Hr_SUBST);
-    return undef
+    croak("callback returned MM_SUBST without a value or vice-versa: $token")
+      if !defined($val) ^ !($return_op & MM_SUBST);
+    return ()
       unless defined($val);
   } else {
     croak "Invalid modifer ",visq(":$_")," in token $token",
@@ -385,7 +389,7 @@ btw dvis 'XX retrieved $tokhash_key -> $info $content_list' if $debug;
       # A token is not in %tokhash if it is the 2nd instance of the same
       # token in a rop (in which case multi-values are not allowed).
       $content_list
-        = _get_content_list($m, $tokname, $users_hash, $custom_mods);
+            = _get_content_list($m, $tokname, $users_hash, $custom_mods);
 btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' if $debug;
       return(0)
         unless defined $content_list;
@@ -713,7 +717,7 @@ oops unless blessed($context);
 #      (croak if multiple values at this point)
 #
 #      Apply std_mods to the value
-#      return (Hr_SUBST, [content])
+#      return (MM_SUBST, [content])
   my (%to_deletes, %spandowns);
   my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes, \%spandowns);
   btw "AFTER SUBSTITUTIONS: context=", fmt_tree($context, wi => 2) if $debug;
@@ -747,6 +751,7 @@ package ODF::MailMerge::Engine;
 
 use constant TABLE_SECTION_FRAME_FILTER => ODF::MailMerge::TABLE_SECTION_FRAME_FILTER;
 use constant TABLE_FILTER => ODF::MailMerge::TABLE_FILTER;
+use constant MM_SUBST     => ODF::MailMerge::MM_SUBST;
 
 use ODF::lpOD;
 use ODF::lpOD_Helper;
@@ -824,7 +829,7 @@ sub add_record {
   # have some value.  This wrapper callback enforces that.
   my sub wrapper_cb {
     my ($tokname, $token, $para, $custom_mods) = @_;
-    my $return_op = Hr_SUBST;
+    my $return_op = MM_SUBST;
     my $key = exists($hash->{$tokname}) ? $tokname :
               exists($hash->{'*'}) ? '*' :
               croak "Unhandled token ", vis($token),
@@ -836,7 +841,7 @@ sub add_record {
       ($return_op, $val) = $val->(@_);
       croak "Unhandled token ", vis($token),
             ivis '; the callback in hash{$key} returned ($return_op,$val)\n'
-        unless ($return_op & Hr_SUBST)==0 || defined $val;
+        unless ($return_op & MM_SUBST)==0 || defined $val;
     } else {
       croak "Unhandled token modifier ",visq(":$_") foreach @$custom_mods;
     }
@@ -866,7 +871,7 @@ ODF::MailMerge - "Mail Merge" or just substitute tokens in ODF documents
 
  use ODF::lpOD;
  use ODF::lpOD_Helper;
- use ODF::MailMerge qw/replace_tokens/;
+ use ODF::MailMerge qw/replace_tokens MM_SUBST/;
 
  my $doc = odf_get_document("/path/to/file.odt");
  my $body = $doc->get_body;
@@ -901,13 +906,13 @@ ODF::MailMerge - "Mail Merge" or just substitute tokens in ODF documents
 
 =head1 DESCRIPTION
 
-This tool uses ODF::lpOD and ODF::lpOD_Helper to patch ODF documents.
+This tool uses ODF::lpOD / ODF::lpOD_Helper to patch ODF documents.
 Token strings of the form "{key}" or "{key:modifiers...}"
 are replaced with values from a hash indexed by "key".
 
 Optional :modifiers within tokens
-can change the value actually substituted or have side-effects
-such as removing lines when there is no value to substitute.
+can change the substituted value or have side-effects
+such as removing lines when the substituted value is empty.
 
 A "mail merge" function replicates a template object (e.g. table or section)
 as many times as needed to plug in values from multiple data records.
@@ -966,7 +971,7 @@ database records, plugging in specific values from each reacord.
 Some fields may have empty ("") values in a particular record,
 in which case the containing row, paragraph etc.
 can be I<deleted to avoid leaving undesirable blank space>.
-For example a mailing list may allow for a secondary addressee line
+For example a mailing list may allow a secondary addressee line
 which is not always needed.
 
 =item 3.
@@ -993,7 +998,7 @@ row being visited by 'apply'.
 Therefore tokens {Name} and {Address} would be
 replaced by appropriate values from the "Name" and "Address" columns.
 
-=head2 $engine = ODF::MailMerge::Engine-E<gt>new(context => $context, proto_tag => "{tag}");
+=head2 $engine = ODF::MailMerge::Engine-E<gt>new(context=>$body, proto_tag=>"{tag}");
 
 =head2 $engine = ODF::MailMerge::Engine-E<gt>new(proto_elt => $elt);
 
@@ -1002,8 +1007,9 @@ element.
 Currently only I<table> prototypes are supported, but
 but I<section>s and other ODF text wrappers may be supported later.
 
-In the first form, the string "{tag}" is searched for within C<$context>
-(e.g. the document body), and the containing Table is used as the prototype
+In the first form, the string "{tag}" is searched for
+within C<$context> (e.g. the document body),
+and the containing Table is used as the prototype
 element.  The tag string may be contained anywhere in the table, and will
 be deleted (so it has no effect on the final result).
 
@@ -1034,8 +1040,8 @@ or "{First Name:...}" .
 The hash key B<'*'> is a wildcard, used if there is no entry for
 a token name.
 
-Token names may contain internal spaces but leading and trailing spaces
-around the name (but not inside :modifiers) are ignored.
+Tokens may contain internal spaces but leading and trailing spaces
+around the token name are ignored.
 Literal : { or } characters must be backslashed i.e. \: \{  or \}.
 
 A B<hash value> may be:
@@ -1079,8 +1085,8 @@ The standard :modifiers are
                 which are empty. To be useful, the cell should have
                 Format->align text->Center so it can float.
 
-  :die        - Delete the containing row, frame, or paragraph if
-                all tokens with :die are empty ("") after substitution.
+  :die        - Delete If Empty - the containing row, etc. is deleted
+                if all tokens with :die are empty ("") after substitution.
 
   :rmsb       - Remove shared borders between replicated rows
 
@@ -1169,20 +1175,20 @@ would produce
   └──────────────┴────────────────┴───────────────────────┘
 
 The B<:rep_first> modifier indicated that that template without bottom borders
-should be used for the first row in the replication set, etc.
-Conditional :rep* modifiers must be mutually exclusive.
+should be used for the first row in a multi-value replication set, etc.
+:rep* conditions must be mutually exclusive.
 
 The first template in a set may be a "regular" template row without
-conditions, as in the example above.  This is used only when none of the
+conditions, as in the example above.  it is used only when none of the
 conditional templates apply.  In the above example that was never because
 the conditional templates coverd every situation; however the "regular"
 template would be used if there was only one "replicate", i.e. all {token}s
 had only a single value.
 
-B<:rep=EXPR> is the most general form.  EXPR is a Perl expression using
+B<:rep=EXPR> is a general conditional.  EXPR is a Perl expression using
 variables C<$i> and C<$N>, and which evaluates to
 true when the template should be instantiated.  C<$i> will hold the current
-replicate index (first is zero), and C<$N> holds the total number of
+replicate index (first is zero), and C<$N> the total number of
 rows in the replication set.
 
   "Friendly" conditional     Equivalent
@@ -1192,11 +1198,9 @@ rows in the replication set.
        :rep_only               :rep= $N==1
 
 The above example is not very compelling because the C<:rmsb> modifier provides
-built-in support for removing shared borders.
-
-The following allows odd & even rows to have distinctive formatting
-(e.g. different background colors).  The first row is always "even"
-but odd & even alternatives are given for middle and last rows:
+built-in support for removing shared borders.  Here is a more interesting
+example which formats odd & even replicates distinctively
+(such as different background colors):
 
   ┌─────────────────────────────────────────────────────────────┐
   │EVEN (first)   {Token Name:rep_first}                        │
@@ -1216,7 +1220,7 @@ but odd & even alternatives are given for middle and last rows:
 
 =head2 CALLBACKS
 
-If a hash value is a sub reference, the sub is called with args
+If a hash value is a reference to a sub, the sub is called with args
 
   ($token_name, $token, $para, $custom_mods)
 
@@ -1233,10 +1237,9 @@ Note: An exception occurs if unrecognized :modifiers are encountered
 when a callback is not being used.
 
 The callback's return values indicate whether and how to replace
-the token.  The protocol uses the Hr_* constants exported
-by L<ODF::lpOD_Helper>:
+the token:
 
-  return(Hr_SUBST, <value>)
+  return(MM_SUBST, <value>)
 
 B<< <value> >> may be any of the allowed hash values (except for a callback).
 If a [list of values] is returned and there
@@ -1249,8 +1252,6 @@ The token is not replaced, but left as-is, and processing continues.
 This only makes sense if the token will somehow be processed later,
 for example via a separate call to C<replace_tokens>.
 
-=for future FIXME: Define local MM_SUBST to avoid showing Hr_* dependencies?
-
 =head1 COMPLETE EXAMPLE
 
 A complete example application is included in the distribution.
@@ -1258,8 +1259,7 @@ To display the path on your system, run
 
   perl -MODF::MailMerge=:all -C -E 'say odfmm_example_path'
 
-(something
-like C<.../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/>)
+  # .../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/
 
 =head1 SEE ALSO
 
