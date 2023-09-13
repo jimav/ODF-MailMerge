@@ -27,7 +27,7 @@ use Scalar::Util qw/refaddr blessed/;
 use List::Util qw/first any none all max min sum0/;
 use List::MoreUtils qw/before after uniq/;
 use Data::Dumper::Interp 6.004
-       qw/visnew ivis dvis dvisq ivisq vis visq avis avisq addrvis/;
+       qw/visnew ivis dvis dvisq ivisq vis visq avis avisq addrvis u/;
 use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=M${lno}:' ;
 use Clone ();
 
@@ -216,9 +216,11 @@ sub _get_content_list($$$$) {
   my $token = $m->{match};
   if (ref($val) eq "CODE") {
     my $para  = $m->{para};
-    (my $return_op, $val) = $val->($tokname, $token, $para, $custom_mods);
+    (my $op, $val) = $val->($tokname, $token, $para, $custom_mods);
+    croak("Callback returned an invalid opcode: ",u($op))
+      if !defined($op) or $op != MM_SUBST && $op != 0;
     croak("callback returned MM_SUBST without a value or vice-versa: $token")
-      if !defined($val) ^ !($return_op & MM_SUBST);
+      if !defined($val) ^ !($op & MM_SUBST);
     return ()
       unless defined($val);
   } else {
@@ -226,8 +228,10 @@ sub _get_content_list($$$$) {
           "\n(A callback is required to use custom modifiers)\n"
       for @$custom_mods;
   }
+  croak ivisq 'Value for token $token is []'
+    if ref($val) eq 'ARRAY' && @$val==0;
   my $content_list = _to_content_list($val);
-btw visnew->dvisq('CCC $content_list') if $debug;
+btw visnew->dvisq('CCC $val $content_list') if $debug;
   $content_list
 }
 
@@ -756,6 +760,7 @@ use constant MM_SUBST     => ODF::MailMerge::MM_SUBST;
 use ODF::lpOD;
 use ODF::lpOD_Helper;
 use Data::Dumper::Interp;
+use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=MME${lno}:' ;
 use Carp;
 our @CARP_NOT = ("ODF::MailMerge", "ODF::lpOD_Helper", "ODF::lpOD");
 
@@ -794,6 +799,9 @@ sub new {
     #prev        => undef,
   },$class
 }
+
+my $__FILE__ = __FILE__;
+my $__PACKAGE__ = __PACKAGE__;
 
 sub add_record {
   my ($self, $hash, %opts) = @_;
@@ -848,8 +856,19 @@ sub add_record {
     # FIXME: Why is _to_content_list needed here?
     return ($return_op, ODF::MailMerge::_to_content_list($val))
   }
-  ODF::MailMerge::replace_tokens($table, {'*' => \&wrapper_cb}, %opts);
-}
+  #ODF::MailMerge::replace_tokens($table, {'*' => \&wrapper_cb}, %opts);
+  my $r = eval {
+           ODF::MailMerge::replace_tokens($table, {'*' => \&wrapper_cb}, %opts)
+          };
+  if ($@) { # filter out our internal stuff to make easier to read
+    { local $_;
+      $@ =~ s/^[^\n]* called \Kat $__FILE__ line .*?(?=\s*${__PACKAGE__}::add_record)/from [MM internals]/msg
+        unless $opts{debug};
+    }
+    die "$@\n";
+  }
+  $r
+}#add_record
 
 sub finish {
   my ($self, %opts) = @_;
