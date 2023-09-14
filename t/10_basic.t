@@ -147,7 +147,7 @@ my %hash = (
     is($token, '{Date:mymodif}', 'User callback $match arg');
     is($custom_mods, ["mymodif"], 'User callback $mods arg');
     ok($para->Hsearch($token), "  para contains the token");
-    return (Hr_SUBST, ["8/18/2023"]);
+    return (MM_SUBST, ["8/18/2023"]);
   },
 );
 replace_tokens($body, \%hash, debug => $debug) == 1 or fail();
@@ -323,6 +323,7 @@ test_multi(["XXX[{TokA:die} {TokB:die}]",
 # :rmbb and :span (not really tested)
 ###########################
 test_rt( "MyTok", [':span'], 1 );
+test_rt( "MyTok", [':spanr'], 1 );
 test_rt( "MyTok", [':rmsb'], 1 );
 
 # TODO FUTURE: TEst :span and eliding borders

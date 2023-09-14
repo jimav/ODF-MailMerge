@@ -114,8 +114,9 @@ btw visq($_) if $debug;
     if (/^(?: nb|unfold|breakmulti
              |die|del(?:empty|row|para|=.*)
              |rep(?:_first|_notfirst|_mid|_last|=.*)
-             |rmsb  # remove shared border between replicates
-             |span  # span down through empty cells below
+             |rmsb    # remove shared border between replicates
+             |span(?:d|down)?  # span down through empty cells below
+             |spanr(?:ight)?   # span right through empty cells
              |reptag=.*
           )$/xs) {
       push @std_mods, $_;
@@ -237,7 +238,7 @@ btw visnew->dvisq('CCC $val $content_list') if $debug;
 
 sub _get_replicate_opts($) {
   my $std_mods = shift;
-  my ($cond_expr, $rmsb, $span);
+  my ($cond_expr, $rmsb, $spandown, $spanright);
   foreach (@$std_mods) {
     my $cexpr;
     if (/^rep/) {
@@ -266,9 +267,10 @@ sub _get_replicate_opts($) {
       }
     }
     elsif ($_ eq "rmsb") { $rmsb = 1 }
-    elsif ($_ eq "span") { $span = 1 }
+    elsif (/^span(?:d|down)?$/) { $spandown = 1 }
+    elsif (/^spanr(?:ight)?$/)  { $spanright = 1 }
   }
- return ($cond_expr, $rmsb, $span)
+ return ($cond_expr, $rmsb, $spandown, $spanright)
 }
 
 sub _rt_dryrun($$$) {
@@ -283,7 +285,7 @@ btw dvis '_rt_dryrun $token' if $debug;
             = _get_content_list($m, $tokname, $users_hash, $custom_mods);
     next
       unless defined $content_list;
-    my ($cond_expr, $rmsb, $span) = _get_replicate_opts($std_mods);
+    my ($cond_expr, $rmsb, $spand, $spanr) = _get_replicate_opts($std_mods);
     my ($rop, $rop_name) = _para_to_rop($m->{para});
     my $tokhash_key = _mk_tokhash_key($rop, $tokname);
     if (exists $tokhash->{$tokhash_key}) {
@@ -300,7 +302,8 @@ btw dvis '_rt_dryrun $token' if $debug;
       token        => $token, # just for debugging?
       (defined($cond_expr) ? (cond_expr => $cond_expr) : ()),
       ($rmsb               ? (rmsb => 1) : ()),
-      ($span               ? (span => 1) : ()),
+      ($spand              ? (spandown => 1) : ()),
+      ($spanr              ? (spanright => 1) : ()),
     };
   }#foreach token in context
 }# _rt_dryrun
@@ -336,40 +339,77 @@ sub _do_rm_border($$$) {
 sub _do_rmtb($$) { &_do_rm_border(@_, "fo:border-top"   ) }
 sub _do_rmbb($$) { &_do_rm_border(@_, "fo:border-bottom") }
 
-sub _do_span($) {
-  my $spanning_cell = shift;
-  # This is called after substitutions.  Span the cell down over
-  # any cells below which are empty.  The empty cells might or might not
-  # be part of a replicate group!
+sub _num_empty_atorbelow($$$$) {
+  my ($table, $rx, $numrows, $cx) = @_;
+  my $num_empty = 0;
+  while ($rx + $num_empty < $numrows) {
+    my $row = $table->get_row($rx+$num_empty);
+    my $this_cell = $row->get_cell($cx);
+    if ($this_cell->Hget_text() ne "") {
+      last
+    }
+    $num_empty++;
+  }
+  $num_empty;
+}
+sub _do_span($@) {
+  my ($spanning_cell, $spandirs) = @_;
+  # This is called after substitutions.  Span the cell over
+  # cells which are now empty (paying no attention to replicate groups!)
+  my $tag = $spanning_cell->tag;
+  if ($tag eq 'table:covered-table-cell') {
+    # This cell has already been spaneed-over.  So skip it.
+    return;
+  }
+  oops unless $tag eq "table:table-cell" && $spanning_cell->first_child;
   my $table = $spanning_cell->get_parent_table;
   my ($numrows, $numcols) = $table->get_size;
   my (undef, $rx, $cx) = $spanning_cell->get_position;
   my ($rspan, $cspan) = $spanning_cell->get_span;
-  # r0:before r1:before r2:$cell  r3:"" c4:"" r5:NotEmpty     (numrows==6)
-  #                     nrspan==1 =2    =3    (=4)
-  my $new_rspan = $rspan; # e.g. 1
-  while (($rx+$new_rspan) < $numrows) {
-    my $row = $table->get_row($rx+$new_rspan);
-    my $this_cell = $row->get_cell($cx);
-    last if $this_cell->Hget_text() ne "";
-    btw dvis 'DELETING CONTENT OF $this_cell $rx+$new_rspan: ',visq($this_cell->Hget_text) if $debug;
-    # Entirely delete paragraphs (and nested tables or sections...)
-    # from cells to be covered; otherwise they seem to end up in the
-    # spanning cell (contrary to what ODF::lpOD docs imply about covered cells).
-    foreach ($this_cell->children) {
-      btw "    (deleting $_)" if $debug;
-      $_->delete;
-    }
-    ++$new_rspan;
+  oops if $rspan != 1 || $cspan != 1; #not handled
+  my $new_rspan = $rspan;
+  my $new_cspan = $cspan;
+  if ($spandirs->{down} && $rx < $numrows-1) {
+    # r0:before r1:before r2:$cell  r3:"" c4:"" r5:NotEmpty     (numrows==6)
+    #                     nrspan==1 =2    =3    (=4)
+    $new_rspan = 1 + _num_empty_atorbelow($table, $rx+1, $numrows, $cx);
   }
-  if ($new_rspan != $rspan) {
-    btw dvis 'SET SPAN: $rspan, $new_rspan $rx $cx $cspan $spanning_cell' if $debug;
-    $spanning_cell->set_span(rows => $new_rspan, columns => $cspan);
+  if ($spandirs->{right} && $cx < $numcols-1) {
+    for (my $this_cx = $cx+1; $this_cx < $numcols; $this_cx++) {
+      my $vempty = _num_empty_atorbelow($table, $rx, $numrows, $this_cx);
+      # If also vertically spanning, horiz. spanning can only be done
+      # if the spanned columns are empty in all vertically-spanned rows,
+      # i.e. no non-empty cell will be covered.
+      last if $vempty < $new_rspan; # vempty >= 1 to cover 1st row etc.
+      $new_cspan++;
+    }
+  }
+  # Entirely delete paragraphs (and nested tables or sections...)
+  # from cells to be covered; otherwise the content seems to end up in the
+  # spanning cell (contrary to what ODF::lpOD docs imply about covered cells).
+  for my $this_rx ($rx .. $rx+$new_rspan-1) {
+    my $row = $table->get_row($this_rx);
+    for my $this_cx ($cx .. $cx+$new_cspan-1) {
+      next if $this_rx==$rx && $this_cx==$cx; # the surviving (spanning) cell
+      my $cell = $row->get_cell($this_cx);
+local $debug = 1;
+      btw dvis 'DELETING CONTENT OF $cell $this_rx $this_cx ($numcols $numrows $new_rspan $new_cspan): ',
+          visq($cell->Hget_text) if $debug;
+      foreach ($cell->children) {
+        btw "    (deleting $_)" if $debug;
+        $_->delete;
+      }
+    }
+  }
+
+  if ($new_rspan != $rspan or $new_cspan != $cspan) {
+    oops if $new_rspan <= 0 or $new_cspan <= 0;
+    $spanning_cell->set_span(rows => $new_rspan, columns => $new_cspan);
   }
 }
 
 sub _rt_dosubst($$$$$) { # returns Hreplace result list
-  my ($context, $users_hash, $tokhash, $to_deletes, $spandowns) = @_;
+  my ($context, $users_hash, $tokhash, $to_deletes, $spans_todo) = @_;
   my $doc = $context->document();
   $context->Hreplace($token_re, sub {
     my $m = shift;
@@ -427,18 +467,22 @@ btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' i
         }
       }
       elsif ($_ eq "rmsb") { } # handled in 1st pass, set {rmtb/rmbb} in $info
-      elsif ($_ eq "span") {
+      elsif (/^span(|d|down|r|right)$/) {
+        my $down_or_right = do{ local $_ = $1; /^r/ ? "right" : "down" };
         # If the rop is in a replicate group (possibly by itself), then
-        # $info->{span} is set in the first replicate only.
+        # $info->{spandown} is set in the first replicate only.
         # Otherwise this is an odd case (2nd token in same paragraph)
         # where there is no $info
-        if (!$info || $info->{span}) {
-          # Do *not* look outside a Frame wrapper possibly in a cell
+        if (!$info || $info->{spandown} || $info->{spanright}) {
+          # Do *not* look outside a Frame wrapper within in a cell
           if (my $cell = $m->{para}->Hparent(CELL_FILTER, FRAME_FILTER)) {
             my $rop = $cell->parent(ROW_FILTER);
             # Record the rop so we can later check that it wasn't deleted
-            # before fiddling with the cell
-            $spandowns->{refaddr $cell} = [$rop, $cell];
+            # before fiddling with the cell.  N.B. Both :span(down)
+            # and :spanright may be present in the cell, not necessarily
+            # in the same {token} (although that makes no difference).
+            my $aref = $spans_todo->{refaddr $cell} //= [$rop, $cell, {}];
+            $aref->[2]->{$down_or_right} = 1;
           }
         }
       }
@@ -586,7 +630,7 @@ btw ivis 'GGG-Insert $new_rop (cloned from $templ) as PREV_SIB of $first_rop ', 
             #rop          => $new_rop,
             #cond_expr    => $info->{cond_expr}, # just for debugging??
           };
-          foreach (qw/tokname token rmsb span/) {
+          foreach (qw/tokname token rmsb spandown spanright/) {
             $new_info->{$_} = $info->{$_} if exists $info->{$_};
           }
           $info = $new_info;
@@ -600,7 +644,7 @@ btw dvis 'G G-1 $i $N Created $new_key $tokhash->{$new_key}\n $info' if $debug;
             $info->{rmtb} = 1 if $i > 0;    # remove top border
           }
         }
-        delete $info->{span} if $i > 0;
+        delete $info->{spandown} if $i > 0;
       }
 btw dvis 'G G-2 $i $new_rop' if $debug;
     }# foreach $i
@@ -722,8 +766,8 @@ oops unless blessed($context);
 #
 #      Apply std_mods to the value
 #      return (MM_SUBST, [content])
-  my (%to_deletes, %spandowns);
-  my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes, \%spandowns);
+  my (%to_deletes, %spans_todo);
+  my @rr = _rt_dosubst($context, $hash, \%tokhash, \%to_deletes, \%spans_todo);
   btw "AFTER SUBSTITUTIONS: context=", fmt_tree($context, wi => 2) if $debug;
 
 # 4. Delete rops which contained token(s) with :del* modifiers where
@@ -740,11 +784,11 @@ oops unless blessed($context);
     }
   }
 
-# 5. Span cells containing tokens with :span if cells below are empty
-  foreach (values %spandowns) {
-    my ($rop, $cell) = @$_;
+# 5. Span cells containing tokens with :span(down) if cells below are empty
+  foreach (values %spans_todo) {
+    my ($rop, $cell, $spandirs) = @$_;
     next if exists $to_deletes{$rop}; # was deleted above
-    _do_span($cell);
+    _do_span($cell, $spandirs);
   }
   # ??? should replace count be reduced by the number of tokens in
   # objects removed via $to_delete ???
@@ -1100,9 +1144,13 @@ The standard :modifiers are
 
   :breakmulti - Append newline if the value contains embedded newlines.
 
-  :span       - (only in a table cell) Span the cell down over cells below
-                which are empty. To be useful, the cell should have
+  :span or :spand
+              - (only in a table cell) Span the cell down over cells
+                below which are empty. To be useful, the cell should have
                 Format->align text->Center so it can float.
+
+  :spanr        (only in a table cell) Span the cell rightward over cells
+                which are empty.
 
   :die        - Delete If Empty - the containing row, etc. is deleted
                 if all tokens with :die are empty ("") after substitution.

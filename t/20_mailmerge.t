@@ -195,7 +195,7 @@ if ($debug) {
       if (int(rand(2)) == 0) {
         @retvals = (0); # do nothing
       } else {
-        @retvals = (Hr_SUBST, ["bogon"]);
+        @retvals = (MM_SUBST, ["bogon"]);
       }
       say dvis '"*" callback: $tokname $token $custom_mods @retvals' if $debug;
       $wildcard_got{$tokname}++;
