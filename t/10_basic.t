@@ -2,9 +2,9 @@
 use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops btw btwN/; # strict, warnings, Carp
-use t_TestCommon #':silent', # Test2::V0 etc.
+use t_TestCommon ':silent', # Test2::V0 etc.
                  qw/:DEFAULT $debug $savepath/;
-warn ":silent temp disabled";
+#warn ":silent temp disabled";
 
 use LpodhTestUtils qw/append_para verif_normalized/;
 
@@ -320,12 +320,12 @@ test_multi(["XXX[{TokA:die} {TokB:die}]",
 );
 
 ###########################
-# :rmbb and :span (not really tested)
+# :rmbb and :spanr,spand (not really tested)
 ###########################
-test_rt( "MyTok", [':span'], 1 );
+test_rt( "MyTok", [':spand'], 1 );
 test_rt( "MyTok", [':spanr'], 1 );
 test_rt( "MyTok", [':rmsb'], 1 );
 
-# TODO FUTURE: TEst :span and eliding borders
+# TODO FUTURE: TEST :spand and eliding borders
 
 done_testing;

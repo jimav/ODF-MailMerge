@@ -28,7 +28,7 @@ use List::Util qw/first any none all max min sum0/;
 use List::MoreUtils qw/before after uniq/;
 use Data::Dumper::Interp 6.004
        qw/visnew ivis dvis dvisq ivisq vis visq avis avisq addrvis u/;
-use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=M${lno}:' ;
+use Spreadsheet::Edit::Log 1000.005 'oops', ':btw=MME${lno}:' ;
 use Clone ();
 
 use ODF::lpOD;
@@ -115,8 +115,7 @@ btw visq($_) if $debug;
              |die|del(?:empty|row|para|=.*)
              |rep(?:_first|_notfirst|_mid|_last|=.*)
              |rmsb    # remove shared border between replicates
-             |span(?:d|down)?  # span down through empty cells below
-             |spanr(?:ight)?   # span right through empty cells
+             |span[rd]
              |reptag=.*
           )$/xs) {
       push @std_mods, $_;
@@ -267,8 +266,8 @@ sub _get_replicate_opts($) {
       }
     }
     elsif ($_ eq "rmsb") { $rmsb = 1 }
-    elsif (/^span(?:d|down)?$/) { $spandown = 1 }
-    elsif (/^spanr(?:ight)?$/)  { $spanright = 1 }
+    elsif ($_ eq "spand") { $spandown = 1 }
+    elsif ($_ eq "spanr") { $spanright = 1 }
   }
  return ($cond_expr, $rmsb, $spandown, $spanright)
 }
@@ -365,6 +364,7 @@ sub _do_span($@) {
   my $table = $spanning_cell->get_parent_table;
   my ($numrows, $numcols) = $table->get_size;
   my (undef, $rx, $cx) = $spanning_cell->get_position;
+  # Don't confuse 'rspan' (rows spanned) here with ':spanr' (span-right :mod)
   my ($rspan, $cspan) = $spanning_cell->get_span;
   oops if $rspan != 1 || $cspan != 1; #not handled
   my $new_rspan = $rspan;
@@ -392,7 +392,6 @@ sub _do_span($@) {
     for my $this_cx ($cx .. $cx+$new_cspan-1) {
       next if $this_rx==$rx && $this_cx==$cx; # the surviving (spanning) cell
       my $cell = $row->get_cell($this_cx);
-local $debug = 1;
       btw dvis 'DELETING CONTENT OF $cell $this_rx $this_cx ($numcols $numrows $new_rspan $new_cspan): ',
           visq($cell->Hget_text) if $debug;
       foreach ($cell->children) {
@@ -467,8 +466,8 @@ btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' i
         }
       }
       elsif ($_ eq "rmsb") { } # handled in 1st pass, set {rmtb/rmbb} in $info
-      elsif (/^span(|d|down|r|right)$/) {
-        my $down_or_right = do{ local $_ = $1; /^r/ ? "right" : "down" };
+      elsif (/^span[dr]$/) {
+        my $down_or_right = $_ eq 'spand' ? "down" : "right";
         # If the rop is in a replicate group (possibly by itself), then
         # $info->{spandown} is set in the first replicate only.
         # Otherwise this is an odd case (2nd token in same paragraph)
@@ -478,9 +477,9 @@ btw dvis 'YY *no* info, $rop $tokname $token$token  $users_hash $content_list' i
           if (my $cell = $m->{para}->Hparent(CELL_FILTER, FRAME_FILTER)) {
             my $rop = $cell->parent(ROW_FILTER);
             # Record the rop so we can later check that it wasn't deleted
-            # before fiddling with the cell.  N.B. Both :span(down)
-            # and :spanright may be present in the cell, not necessarily
-            # in the same {token} (although that makes no difference).
+            # before fiddling with the cell.  N.B. Both :spand and :spanr
+            # may be present in the cell, not necessarily in the same {token}
+            # (although that makes no difference).
             my $aref = $spans_todo->{refaddr $cell} //= [$rop, $cell, {}];
             $aref->[2]->{$down_or_right} = 1;
           }
@@ -784,7 +783,7 @@ oops unless blessed($context);
     }
   }
 
-# 5. Span cells containing tokens with :span(down) if cells below are empty
+# 5. Span cells containing tokens with :spand if cells below are empty
   foreach (values %spans_todo) {
     my ($rop, $cell, $spandirs) = @$_;
     next if exists $to_deletes{$rop}; # was deleted above
@@ -804,7 +803,7 @@ use constant MM_SUBST     => ODF::MailMerge::MM_SUBST;
 use ODF::lpOD;
 use ODF::lpOD_Helper;
 use Data::Dumper::Interp;
-use Spreadsheet::Edit::Log 1000.005 qw/oops/, ':btw=MME${lno}:' ;
+use Spreadsheet::Edit::Log 1000.005 'oops', ':btw=MME${lno}:' ;
 use Carp;
 our @CARP_NOT = ("ODF::MailMerge", "ODF::lpOD_Helper", "ODF::lpOD");
 
@@ -895,7 +894,7 @@ sub add_record {
             ivis '; the callback in hash{$key} returned ($return_op,$val)\n'
         unless ($return_op & MM_SUBST)==0 || defined $val;
     } else {
-      croak "Unhandled token modifier ",visq(":$_") foreach @$custom_mods;
+      croak "Invalid token modifier ",visq(":$_") foreach @$custom_mods;
     }
     # FIXME: Why is _to_content_list needed here?
     return ($return_op, ODF::MailMerge::_to_content_list($val))
@@ -1144,8 +1143,7 @@ The standard :modifiers are
 
   :breakmulti - Append newline if the value contains embedded newlines.
 
-  :span or :spand
-              - (only in a table cell) Span the cell down over cells
+  :spand      - (only in a table cell) Span the cell down over cells
                 below which are empty. To be useful, the cell should have
                 Format->align text->Center so it can float.
 
