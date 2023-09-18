@@ -905,7 +905,7 @@ sub add_record {
           };
   if ($@) { # filter out our internal stuff to make easier to read
     { local $_;
-      $@ =~ s/^[^\n]* called \Kat $__FILE__ line .*?(?=\s*${__PACKAGE__}::add_record)/from [MM internals]/msg
+      $@ =~ s/^[^\n]* called \Kat \Q${__FILE__}\E line .*?(?=\s*\Q${__PACKAGE__}\E::add_record)/from [MM internals]/msg
         unless $opts{debug};
     }
     die "$@\n";
