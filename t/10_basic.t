@@ -10,11 +10,9 @@ use LpodhTestUtils qw/append_para verif_normalized/;
 
 use ODF::lpOD;
 use ODF::lpOD_Helper;
-use ODF::MailMerge;
+use ODF::MailMerge qw/:DEFAULT $token_re parse_token/;
 
 use constant FRAME_FILTER => 'draw:frame';
-
-my $token_re = $ODF::MailMerge::token_re;
 
 sub escape($) { local $_ = shift; s/([:\{\}\\])/\\$1/g; $_ }
 
@@ -27,15 +25,18 @@ for my $tokname ("A", "a b", "A_B", "A:B", "A\\B", "A{B:", "AB\\") {
                     .join("", map{ ":".escape($_) } @$modlist)
                     ."}";
         my ($ptokname, $smods, $cmods)
-          = eval{ ODF::MailMerge::_parse_token($token) };
-        fail(dvisq '$token parse error: $@') if $@;
+          = eval{ ODF::MailMerge::parse_token($token) };
+        if ($@) {
+          diag $@;
+          fail(dvisq '$token parse error: $@');
+        }
         unless ($ptokname eq $tokname) {
-          fail(dvis '_parse_token $token : $ptokname ne $tokname');
+          fail(dvis 'parse_token $token : $ptokname ne $tokname');
         }
         unless (@$smods == 0
                 && @$cmods == @$modlist
                 && all { $cmods->[$_] eq $modlist->[$_] } 0..$#$cmods) {
-          is($cmods, $modlist, "_parse_token bug with modifiers",
+          is($cmods, $modlist, "parse_token bug with modifiers",
              dvis '$tokname $modlist $prespace $postspace\n$token\n$ptokname $smods $cmods'
           )
         }
@@ -51,7 +52,7 @@ for my $bad_tokname ("A\tB", "a\nb", "A:\nfoo") {
         my $token = "{".$prespace.escape($bad_tokname).$postspace
                     .join("", map{ ":".escape($_) } @$modlist)
                     ."}";
-        () = eval{ ODF::MailMerge::_parse_token($token) };
+        () = eval{ ODF::MailMerge::parse_token($token) };
         unless ($@ =~ /token/) {
           fail(dvis '$bad_tokname failed to provoke an error ($token)');
         }
@@ -59,7 +60,7 @@ for my $bad_tokname ("A\tB", "a\nb", "A:\nfoo") {
     }
   }
 }
-{ my ($tokname, $std_mods, $custom_mods) = ODF::MailMerge::_parse_token(
+{ my ($tokname, $std_mods, $custom_mods) = ODF::MailMerge::parse_token(
      "{Foo:nb:AA=a1\na2 :BB:unfold:breakmulti:die:delrow:delpara"
     .":del=MY DELTAG"
     .":rep_first:rep_mid:rep_last:rep=MYEXPR:CC:reptag=MYREPTAG}" );

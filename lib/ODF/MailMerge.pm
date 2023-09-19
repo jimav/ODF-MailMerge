@@ -32,7 +32,7 @@ use Spreadsheet::Edit::Log 1000.005 'oops', ':btw=MME${lno}:' ;
 use Clone ();
 
 use ODF::lpOD;
-use ODF::lpOD_Helper 6.004 qw/:DEFAULT
+use ODF::lpOD_Helper 6.006 qw/:DEFAULT
                               PARA_FILTER
                               Hr_SUBST
                               Hr_MASK
@@ -56,7 +56,7 @@ use constant TABLE_SECTION_FRAME_FILTER =>
 
 use Exporter 'import';
 our @EXPORT = qw/replace_tokens MM_SUBST/;
-our @EXPORT_OK = qw/odfmm_example_path $token_re/;
+our @EXPORT_OK = qw/odfmm_example_path $token_re parse_token/;
 our %EXPORT_TAGS = ('all' => [@EXPORT, @EXPORT_OK]);
 
 our $debug;
@@ -74,21 +74,27 @@ sub odfmm_example_path() {
   $p->canonpath
 }
 
-=for Pod::Coverage odfmm_example_path
+=for Pod::Coverage odfmm_example_path parse_token
 
 =cut
 
 # Recognize anything probably intended as a {token} expression
-our $token_re = qr/\{ (?<tokname> (?:[^:\{\}\\\n]+|\\[^\n])+    )
+our $token_re = qr/\{ [\ \t]*+
+                      (?<tokname> (?: [^:\{\}\\\s]++ |
+                                      \\[^\n] |
+                                      [\ \t]+(?=[^:\{\}\s])
+                                  )*
+                      )
+                      [\ \t]*+
                       (?<mods>    (?: : (?:[^:\{\}\\]+|\\.)* )* )
                    \}/xs;
 
-sub _parse_token($) {
+sub parse_token($) {
   my $t = shift;
   $t =~ /^${token_re}$/ or oops dvis '$t';
   my ($tokname, $mods) = ($+{tokname}, $+{mods});
 
-  $tokname =~ s/^[ \t]*//; $tokname =~ s/[ \t]*$//;
+  #$tokname =~ s/^[ \t]*//; $tokname =~ s/[ \t]*$//;
   $tokname =~ s/\\(.)/$1/sg; # un-escape
 
   croak "Invalid token ",vis($t)," -- token NAME may not contain tab or newline"
@@ -97,7 +103,8 @@ sub _parse_token($) {
   # Split :mod1:mod2:... discarding the initial :s
   my @mods;
   while ($mods =~ /\G:((?:[^:\\]+|\\.)*)/gsc) {
-    croak "Extraneous ':' in ",vis($t) if $1 eq ""; # empty tokname
+    croak ivis "Extraneous ':' in \$t  (mods=\$mods)"
+      if $1 eq ""; # empty tokname
     push @mods, $1;
   }
   oops vis(pos($mods)) unless !defined(pos($mods)) || pos($mods)==length($mods);
@@ -279,7 +286,7 @@ btw dvis 'dryrun $context = ',fmt_tree_brief($context) if $debug;
   for my $m ( $context->Hsearch($token_re, multi => TRUE) ) {
     my $token = $m->{match};
 btw dvis '_rt_dryrun $token' if $debug;
-    my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
+    my ($tokname, $std_mods, $custom_mods) = parse_token($token);
     my $content_list
             = _get_content_list($m, $tokname, $users_hash, $custom_mods);
     next
@@ -416,7 +423,7 @@ sub _rt_dosubst($$$$$) { # returns Hreplace result list
 ##btw "==============================================\n",
 ##    dvis 'Hreplace cb TOP $token\ncontext=',fmt_tree($context, wi=>3),
 ##    "\n===(TOP $token)===============================\n" if $debug;
-    my ($tokname, $std_mods, $custom_mods) = _parse_token($token);
+    my ($tokname, $std_mods, $custom_mods) = parse_token($token);
     my ($rop, $rop_name) = _para_to_rop($m->{para});
     my $tokhash_key = _mk_tokhash_key($rop, $tokname);
 
@@ -819,9 +826,9 @@ sub new {
     my $proto_tag = delete($opts{proto_tag})
       // croak "Neither proto_tag or proto_elt was specified";
     my $context = delete($opts{context}) // croak "Missing context";
-    my $r = $context->Hreplace($proto_tag, [""], %opts)
+    (my @r = $context->Hreplace($proto_tag, [""], %opts))
       // croak ivis 'proto_tag $proto_tag not found';
-    $proto_elt = $r->{para}->parent(TABLE_SECTION_FRAME_FILTER)
+    $proto_elt = $r[0]->{para}->parent(TABLE_SECTION_FRAME_FILTER)
       // croak ivis 'proto_tag $proto_tag is not located in a proto container';
   }
   foreach (keys %opts) {
@@ -944,7 +951,7 @@ ODF::MailMerge - "Mail Merge" or just substitute tokens in ODF documents
    who => "John Brown",
    'last words' => [
       [color => "#50FFEE", "bold"],
-      " I deny everything but...the design on my part to free the slaves."
+      "I deny everything but...the design on my part to free the slaves."
    ],
    zzz => \&callback,
  };
@@ -955,7 +962,8 @@ ODF::MailMerge - "Mail Merge" or just substitute tokens in ODF documents
  #   2. Replace tokens in that table using data from a spreadsheet,
  #      replicating the table as many times as necessary for all rows.
  #
- my $engine = ODF::MailMerge::Engine->new(context => $body, proto_tag => "{mmproto}");
+ my $engine = ODF::MailMerge::Engine->new(context => $body,
+                                          proto_tag => "{mmproto}");
 
  use Spreadsheet::Edit qw/read_spreadsheet apply %crow/;
  read_spreadsheet "/path/to/data.xlsx!Sheet1";
@@ -1325,6 +1333,24 @@ To display the path on your system, run
   perl -MODF::MailMerge=:all -C -E 'say odfmm_example_path'
 
   # .../site_perl/5.xx.yy/auto/share/dist/ODF-MailMerge/examples/
+
+=head1 MISCELLANEOUS
+
+=head2 $token_re
+
+A regular expression which matches any {token}.  Named captures are set:
+
+  $+{tokname}   # Just the token name, sans leading/trailing spaces or tabs
+  $+{mods}      # :mod1:mod2:...
+
+The captured strings will still contain any backslash escapes.
+
+=head2 ($tokname, $std_mods, $custom_mods) = parse_token("{name:mods...}")
+
+Parses a complete {token}, returning its components with backslash escapes
+resolved (i.e. the escaping backslash removed).
+C<$std_mods> and C<$custom_mods> will be
+refs to arrays containing any :modifiers found without their leading ':'s.
 
 =head1 SEE ALSO
 
