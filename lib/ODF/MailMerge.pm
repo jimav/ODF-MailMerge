@@ -827,7 +827,7 @@ sub new {
       // croak "Neither proto_tag or proto_elt was specified";
     my $context = delete($opts{context}) // croak "Missing context";
     (my @r = $context->Hreplace($proto_tag, [""], %opts))
-      // croak ivis 'proto_tag $proto_tag not found';
+      || croak ivis 'proto_tag $proto_tag not found';
     $proto_elt = $r[0]->{para}->parent(TABLE_SECTION_FRAME_FILTER)
       // croak ivis 'proto_tag $proto_tag is not located in a proto container';
   }
@@ -1358,9 +1358,9 @@ L<ODF::lpOD_Helper>
 
 L<Sreadsheet::Edit>
 
-=for comment The command-line tool B<ODFedit> provides access to some
-=for comment features of ODF::MailMerge without writing Perl code.
-=for comment C<cpanm App::ODFedit> will install it.
+=for future The command-line tool B<ODFedit> provides access to some
+=for future features of ODF::MailMerge without writing Perl code.
+=for future C<cpanm App::ODFedit> will install it.
 
 =head1 AUTHOR
 

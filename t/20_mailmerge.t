@@ -3,7 +3,7 @@ use FindBin qw($Bin);
 use lib $Bin;
 use t_Common qw/oops/; # strict, warnings, Carp
 use t_TestCommon ':silent', # Test2::V0 etc.
-                 qw/:DEFAULT verif_no_internals_mentioned
+                 qw/:DEFAULT verif_eval_err verif_no_internals_mentioned
                     $debug $savepath/;
 
 #diag "WARNING: :silent temp disabled";
@@ -228,6 +228,9 @@ if ($debug) {
   eval { $engine->add_record(\%hash2, debug => $debug) };
   verif_no_internals_mentioned($@);
   like($@, qr/nhandled token/, "Diagnose unhandled {token}");
+
+  eval {my $engine2 = ODF::MailMerge::Engine->new(context => $body, proto_tag => '{Non Existent}')}; verif_eval_err(qr/Non Existent/);
+  pass("Diagnose non-existent proto_tag");
 }
 
 done_testing();
