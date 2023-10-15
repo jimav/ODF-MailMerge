@@ -5,8 +5,8 @@
 # related or neighboring rights.  Attribution is requested but is not required.
 use strict; use warnings FATAL => 'all'; use 5.010;
 
-{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = "dev"; }
-# VERSION from Dist::Zilla::Plugin::OurPkgVersion
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = "def"; }
+our $VERSION = "0.001"; # Future: V ERSION from Dist::Zilla::Plugin::OurPkgVersion
 # DATE from Dist::Zilla::Plugin::OurDate
 
 #use 5.12; # for unicode_strings
