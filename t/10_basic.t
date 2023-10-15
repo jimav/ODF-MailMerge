@@ -78,7 +78,8 @@ pass "Finished token-parse tests";
 my $master_copy_path = "$Bin/../tlib/Basic.odt";
 my $input_path = tmpcopy_if_writeable($master_copy_path);
 note "> Reading (copy of) $master_copy_path" if $debug;
-my $doc = odf_get_document($input_path, read_only => 1);
+#my $doc = odf_get_document($input_path, read_only => 1);
+my $doc = odf_new_document_from_template($input_path);
 my $body = $doc->get_body;
 
 #sub xxdebug() {

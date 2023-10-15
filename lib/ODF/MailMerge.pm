@@ -1358,9 +1358,8 @@ L<ODF::lpOD_Helper>
 
 L<Sreadsheet::Edit>
 
-=for future The command-line tool B<ODFedit> provides access to some
-=for future features of ODF::MailMerge without writing Perl code.
-=for future C<cpanm App::ODFedit> will install it.
+The command-line tool B<odfedit> (which comes with L<ODF::MailMerge>)
+provides access to many features of L<ODF::MailMerge> without writing Perl code.
 
 =head1 AUTHOR
 
