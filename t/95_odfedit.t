@@ -157,7 +157,6 @@ EOF
                 .'.*'.$as->{CITY}.', '.$as->{STATE}.' *'.$as->{ZIP};
       $ptext .= $as->{FIRST_NAME}.",".$as->{LAST_NAME}."\n";
     });
-    $exp_re =~ s/ /[ \\N{NO-BREAK SPACE}]/g;
     $exp_re = qr/${exp_re}/;
     note dvis '$ptext';
     $primaryss->spew_utf8($ptext);
@@ -179,6 +178,7 @@ EOF
   ok($odt_outpath->exists, "$odt_outpath exists");
   my $after_text = get_body_text($odt_outpath);
   if ($debug) { warn "SAVING RESULT AS /tmp/j.odt\n"; $odt_outpath->copy("/tmp/j.odt"); }
+  $after_text =~ s/\N{NO-BREAK SPACE}/ /g; # Be insensitive to :nb modifiers
   like($after_text, $exp_re, "subst-value");
 }
 

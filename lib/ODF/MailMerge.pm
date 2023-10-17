@@ -238,7 +238,6 @@ sub _get_content_list($$$$) {
   croak ivisq 'Value for token $token is []'
     if ref($val) eq 'ARRAY' && @$val==0;
   my $content_list = _to_content_list($val);
-btw visnew->dvisq('CCC $val $content_list') if $debug;
   $content_list
 }
 
