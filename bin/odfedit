@@ -13,7 +13,7 @@ use strict; use warnings FATAL => 'all';
 use v5.18; # for lexical_subs
 
 use strict; use warnings;
-use feature qw(switch state say lexical_subs current_sub fc);
+use feature qw(state say lexical_subs current_sub fc);
 use feature qw(unicode_strings unicode_eval evalbytes);
 no warnings "experimental::lexical_subs";
 

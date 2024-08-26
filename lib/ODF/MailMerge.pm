@@ -6,7 +6,7 @@
 use 5.018; # for unicode_strings, lexical_subs
 use strict; use warnings FATAL => 'all';
 no warnings "experimental::lexical_subs";
-use feature qw(switch state say lexical_subs fc);
+use feature qw(state say lexical_subs fc);
 use feature qw(unicode_strings unicode_eval evalbytes);
 use feature 'unicode_strings';
 use utf8;
