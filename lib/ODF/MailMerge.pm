@@ -62,7 +62,7 @@ our %EXPORT_TAGS = ('all' => [@EXPORT, @EXPORT_OK]);
 our $debug;
 
 use File::ShareDir qw/dist_dir/; # module_dir
-use Path::Tiny qw/path/;
+use Path::Tiny 0.146 qw/path/;
 sub odfmm_example_path() {
   my $p = path(__FILE__)->parent->parent->parent->child('share','examples');
   unless ($p->exists) {
