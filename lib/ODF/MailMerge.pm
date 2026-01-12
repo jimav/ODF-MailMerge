@@ -28,7 +28,7 @@ use List::Util qw/first any none all max min sum0/;
 use List::MoreUtils qw/before after uniq/;
 use Data::Dumper::Interp 6.004
        qw/visnew ivis dvis dvisq ivisq vis visq avis avisq addrvis u/;
-use Spreadsheet::Edit::Log 1000.005 'oops', ':btw=MME${lno}:' ;
+use Spreadsheet::Edit::Log 1000.005 'oops', ':btw' ;
 use Clone ();
 
 use ODF::lpOD;
@@ -809,7 +809,7 @@ use constant MM_SUBST     => ODF::MailMerge::MM_SUBST;
 use ODF::lpOD;
 use ODF::lpOD_Helper;
 use Data::Dumper::Interp;
-use Spreadsheet::Edit::Log 1000.005 'oops', ':btw=MME${lno}:' ;
+use Spreadsheet::Edit::Log 1000.005 'oops', ':btw' ;
 use Carp;
 our @CARP_NOT = ("ODF::MailMerge", "ODF::lpOD_Helper", "ODF::lpOD");
 
